@@ -64,6 +64,7 @@ func TestUpdateAuditDestinationNoOp(t *testing.T) {
 		{"mismatched network", func(m *log.AccessMessage) context.Context { return auditContext(true, true, m) }, net.TCPDestination(net.DomainAddress("example.com"), 443), "quic"},
 		{"mismatched port", func(m *log.AccessMessage) context.Context { return auditContext(true, true, m) }, net.UDPDestination(net.DomainAddress("example.com"), 8443), "quic"},
 		{"non-domain protocol", func(m *log.AccessMessage) context.Context { return auditContext(true, true, m) }, validSniffed, "bittorrent"},
+		{"QUIC without observable SNI", func(m *log.AccessMessage) context.Context { return auditContext(true, true, m) }, net.UDPDestination(net.DomainAddress(""), 443), "quic"},
 		{"invalid domain", func(m *log.AccessMessage) context.Context { return auditContext(true, true, m) }, net.UDPDestination(net.DomainAddress("bad domain"), 443), "quic"},
 	}
 

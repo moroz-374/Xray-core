@@ -371,6 +371,110 @@ func TestDispatchTCPOptInKeepsOriginalForNoSNIAndIncompleteClientHello(t *testin
 	}
 }
 
+func TestDispatchUDPQUICOptInAddressFamiliesAndIsolation(t *testing.T) {
+	quicPayload := validQUICInitial(t)
+	tests := []struct {
+		name     string
+		original net.Destination
+		email    string
+	}{
+		{"original ipv4 user a", net.UDPDestination(net.ParseAddress("203.0.113.20"), 443), "1001"},
+		{"original ipv6 user b", net.UDPDestination(net.ParseAddress("2001:db8::20"), 443), "1002"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			message, outboundSession := dispatchQUICPayload(t, test.original, test.email, quicPayload)
+			expectedTarget := net.UDPDestination(net.DomainAddress("www.google.com"), 443)
+			if outboundSession.OriginalTarget != test.original || outboundSession.Target != expectedTarget || outboundSession.RouteTarget.IsValid() {
+				t.Fatalf("unexpected routing state: original=%v target=%v routeTarget=%v", outboundSession.OriginalTarget, outboundSession.Target, outboundSession.RouteTarget)
+			}
+			expected := "from udp:198.51.100.10:50000 accepted udp:www.google.com:443 [direct] email: " + test.email + " original: " + test.original.String() + " sniffed: quic"
+			if got := message.String(); got != expected {
+				t.Fatalf("access message = %q, want %q", got, expected)
+			}
+		})
+	}
+}
+
+func TestDispatchUDPQUICInvalidAndNonInitialStayOriginal(t *testing.T) {
+	nonInitial, err := hex.DecodeString("53f4144825dab3ba251b83d0089e910210bec1a6507cca92ad9ff539cc21f6c75e3551ca44003d9a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		payload []byte
+	}{
+		{"non-initial packet", nonInitial},
+		{"unsupported version", []byte{0xc0, 0xff, 0xff, 0xff, 0xff, 0x00}},
+		{"malformed packet", []byte{0xc0, 0x00, 0x00}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			original := net.UDPDestination(net.ParseAddress("203.0.113.20"), 443)
+			message, outboundSession := dispatchQUICPayload(t, original, "1001", test.payload)
+			if outboundSession.OriginalTarget != original || outboundSession.Target != original || outboundSession.RouteTarget.IsValid() {
+				t.Fatalf("invalid QUIC changed routing: original=%v target=%v routeTarget=%v", outboundSession.OriginalTarget, outboundSession.Target, outboundSession.RouteTarget)
+			}
+			if message.OriginalDestination != nil || message.SniffedProtocol != "" {
+				t.Fatalf("invalid QUIC added audit fields: %+v", message)
+			}
+			if got, want := message.String(), "from udp:198.51.100.10:50000 accepted udp:203.0.113.20:443 [direct] email: 1001"; got != want {
+				t.Fatalf("access message = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func dispatchQUICPayload(t *testing.T, original net.Destination, email string, payload []byte) (*log.AccessMessage, *session.Outbound) {
+	t.Helper()
+	handler := &auditOutboundHandler{dispatched: make(chan context.Context, 1)}
+	dispatcher := &DefaultDispatcher{ohm: &auditOutboundManager{handler: handler}}
+	outboundSession := &session.Outbound{}
+	message := &log.AccessMessage{
+		From:   net.UDPDestination(net.ParseAddress("198.51.100.10"), 50000),
+		To:     original,
+		Status: log.AccessAccepted,
+		Email:  email,
+	}
+	ctx := context.WithValue(context.Background(), core.XrayKey(1), &core.Instance{})
+	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{outboundSession})
+	ctx = session.ContextWithContent(ctx, &session.Content{SniffingRequest: session.SniffingRequest{
+		Enabled:                        true,
+		OverrideDestinationForProtocol: []string{"quic"},
+		LogSniffedDestination:          true,
+	}})
+	ctx = log.ContextWithAccessMessage(ctx, message)
+
+	inbound, err := dispatcher.Dispatch(ctx, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer common.Interrupt(inbound.Reader)
+	if err := inbound.Writer.WriteMultiBuffer(buf.MergeBytes(nil, payload)); err != nil {
+		t.Fatal(err)
+	}
+	common.Close(inbound.Writer)
+	select {
+	case <-handler.dispatched:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for QUIC dispatch")
+	}
+	return message, outboundSession
+}
+
+func validQUICInitial(t *testing.T) []byte {
+	t.Helper()
+	payload, err := hex.DecodeString("cd0000000108f1fb7bcc78aa5e7203a8f86400421531fe825b19541876db6c55c38890cd73149d267a084afee6087304095417a3033df6a81bbb71d8512e7a3e16df1e277cae5df3182cb214b8fe982ba3fdffbaa9ffec474547d55945f0fddbeadfb0b5243890b2fa3da45169e2bd34ec04b2e29382f48d612b28432a559757504d158e9e505407a77dd34f4b60b8d3b555ee85aacd6648686802f4de25e7216b19e54c5f78e8a5963380c742d861306db4c16e4f7fc94957aa50b9578a0b61f1e406b2ad5f0cd3cd271c4d99476409797b0c3cb3efec256118912d4b7e4fd79d9cb9016b6e5eaa4f5e57b637b217755daf8968a4092bed0ed5413f5d04904b3a61e4064f9211b2629e5b52a89c7b19f37a713e41e27743ea6dfa736dfa1bb0a4b2bc8c8dc632c6ce963493a20c550e6fdb2475213665e9a85cfc394da9cec0cf41f0c8abed3fc83be5245b2b5aa5e825d29349f721d30774ef5bf965b540f3d8d98febe20956b1fc8fa047e10e7d2f921c9c6622389e02322e80621a1cf5264e245b7276966eb02932584e3f7038bd36aa908766ad3fb98344025dec18670d6db43a1c5daac00937fce7b7c7d61ff4e6efd01a2bdee0ee183108b926393df4f3d74bbcbb015f240e7e346b7d01c41111a401225ce3b095ab4623a5836169bf9599eeca79d1d2e9b2202b5960a09211e978058d6fc0484eff3e91ce4649a5e3ba15b906d334cf66e28d9ff575406e1ae1ac2febafd72870b6f5d58fc5fb949cb1f40feb7c1d9ce5e71b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
 func captureTLSClientHello(t *testing.T, serverName string) []byte {
 	t.Helper()
 	clientConn, serverConn := stdnet.Pipe()
