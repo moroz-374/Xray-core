@@ -327,6 +327,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 				} else {
 					ob.Target = destination
 				}
+				updateAuditDestination(ctx, ob.OriginalTarget, destination, protocol)
 			}
 			d.routedDispatch(ctx, outbound, destination)
 		}()

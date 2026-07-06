@@ -107,3 +107,11 @@ func TestNormalizeAuditDomain(t *testing.T) {
 		}
 	}
 }
+
+func TestAuditSniffedProtocolCanonicalizesHTTP(t *testing.T) {
+	for _, protocol := range []string{"http", "http1", "http2"} {
+		if got, ok := auditSniffedProtocol(protocol); !ok || got != log.SniffedProtocolHTTP {
+			t.Errorf("auditSniffedProtocol(%q) = (%q, %v)", protocol, got, ok)
+		}
+	}
+}

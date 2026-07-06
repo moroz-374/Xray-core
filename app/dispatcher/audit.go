@@ -69,7 +69,7 @@ func normalizeAuditDomain(domain string) (string, bool) {
 
 func auditSniffedProtocol(protocol string) (log.SniffedProtocol, bool) {
 	switch protocol {
-	case string(log.SniffedProtocolHTTP):
+	case string(log.SniffedProtocolHTTP), "http1", "http2":
 		return log.SniffedProtocolHTTP, true
 	case string(log.SniffedProtocolTLS):
 		return log.SniffedProtocolTLS, true
