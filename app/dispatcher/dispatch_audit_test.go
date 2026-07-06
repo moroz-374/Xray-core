@@ -14,6 +14,7 @@ import (
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/transport"
+	"github.com/xtls/xray-core/transport/pipe"
 )
 
 type auditOutboundManager struct {
@@ -88,6 +89,64 @@ func TestDispatchUpdatesAuditDestinationWithoutChangingRoutingBehavior(t *testin
 			case <-handler.dispatched:
 			case <-time.After(3 * time.Second):
 				t.Fatal("timed out waiting for asynchronous dispatch")
+			}
+
+			if got, want := message.String(), "from tcp:198.51.100.10:50000 accepted tcp:example.com:80 [direct] email: 3 original: tcp:203.0.113.20:80 sniffed: http"; got != want {
+				t.Fatalf("access message = %q, want %q", got, want)
+			}
+			if outboundSession.OriginalTarget != original {
+				t.Fatalf("original target = %v, want %v", outboundSession.OriginalTarget, original)
+			}
+			if routeOnly {
+				if outboundSession.Target != original || outboundSession.RouteTarget != routedSniffed {
+					t.Fatalf("route-only targets: target=%v routeTarget=%v", outboundSession.Target, outboundSession.RouteTarget)
+				}
+			} else if outboundSession.Target != routedSniffed || outboundSession.RouteTarget.IsValid() {
+				t.Fatalf("override targets: target=%v routeTarget=%v", outboundSession.Target, outboundSession.RouteTarget)
+			}
+		})
+	}
+}
+
+func TestDispatchLinkMatchesDispatchAuditBehavior(t *testing.T) {
+	for _, routeOnly := range []bool{false, true} {
+		t.Run(map[bool]string{false: "target override", true: "route-only override"}[routeOnly], func(t *testing.T) {
+			handler := &auditOutboundHandler{dispatched: make(chan context.Context, 1)}
+			dispatcher := &DefaultDispatcher{ohm: &auditOutboundManager{handler: handler}}
+			original := net.TCPDestination(net.ParseAddress("203.0.113.20"), 80)
+			routedSniffed := net.TCPDestination(net.DomainAddress("example.com."), 80)
+			outboundSession := &session.Outbound{}
+			message := &log.AccessMessage{
+				From:   net.TCPDestination(net.ParseAddress("198.51.100.10"), 50000),
+				To:     original,
+				Status: log.AccessAccepted,
+				Email:  "3",
+			}
+			ctx := context.WithValue(context.Background(), core.XrayKey(1), &core.Instance{})
+			ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{outboundSession})
+			ctx = session.ContextWithContent(ctx, &session.Content{SniffingRequest: session.SniffingRequest{
+				Enabled:                        true,
+				OverrideDestinationForProtocol: []string{"http"},
+				RouteOnly:                      routeOnly,
+				LogSniffedDestination:          true,
+			}})
+			ctx = log.ContextWithAccessMessage(ctx, message)
+
+			reader, writer := pipe.New()
+			defer common.Interrupt(reader)
+			defer common.Close(writer)
+			if err := writer.WriteMultiBuffer(buf.MergeBytes(nil, []byte("GET / HTTP/1.1\r\nHost: EXAMPLE.COM.\r\n\r\n"))); err != nil {
+				t.Fatal(err)
+			}
+			link := &transport.Link{Reader: reader, Writer: buf.Discard}
+			if err := dispatcher.DispatchLink(ctx, original, link); err != nil {
+				t.Fatal(err)
+			}
+
+			select {
+			case <-handler.dispatched:
+			default:
+				t.Fatal("synchronous dispatch did not call outbound handler")
 			}
 
 			if got, want := message.String(), "from tcp:198.51.100.10:50000 accepted tcp:example.com:80 [direct] email: 3 original: tcp:203.0.113.20:80 sniffed: http"; got != want {

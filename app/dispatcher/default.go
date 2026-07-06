@@ -383,6 +383,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 			} else {
 				ob.Target = destination
 			}
+			updateAuditDestination(ctx, ob.OriginalTarget, destination, protocol)
 		}
 		d.routedDispatch(ctx, outbound, destination)
 	}
