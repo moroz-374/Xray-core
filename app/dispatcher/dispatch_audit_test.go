@@ -247,6 +247,130 @@ func TestDispatchDefaultOffPreservesLegacyLogAndRouting(t *testing.T) {
 	}
 }
 
+func TestDispatchTCPOptInLogsHTTPAndTLSForAllOriginalAddressFamilies(t *testing.T) {
+	tlsPayload := captureTLSClientHello(t, "tls.example.com")
+	tests := []struct {
+		name     string
+		original net.Destination
+		payload  []byte
+		override string
+		domain   string
+		source   string
+	}{
+		{"http original ipv4", net.TCPDestination(net.ParseAddress("203.0.113.20"), 80), []byte("GET / HTTP/1.1\r\nHost: http.example.com\r\n\r\n"), "http", "http.example.com", "http"},
+		{"http original ipv6", net.TCPDestination(net.ParseAddress("2001:db8::20"), 80), []byte("GET / HTTP/1.1\r\nHost: http.example.com\r\n\r\n"), "http", "http.example.com", "http"},
+		{"tls original ipv4", net.TCPDestination(net.ParseAddress("203.0.113.20"), 443), tlsPayload, "tls", "tls.example.com", "tls"},
+		{"tls original ipv6", net.TCPDestination(net.ParseAddress("2001:db8::20"), 443), tlsPayload, "tls", "tls.example.com", "tls"},
+		{"tls original domain", net.TCPDestination(net.DomainAddress("origin.example.net"), 443), tlsPayload, "tls", "tls.example.com", "tls"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := &auditOutboundHandler{dispatched: make(chan context.Context, 1)}
+			dispatcher := &DefaultDispatcher{ohm: &auditOutboundManager{handler: handler}}
+			outboundSession := &session.Outbound{}
+			message := &log.AccessMessage{
+				From:   net.TCPDestination(net.ParseAddress("198.51.100.10"), 50000),
+				To:     test.original,
+				Status: log.AccessAccepted,
+				Email:  "3",
+			}
+			ctx := context.WithValue(context.Background(), core.XrayKey(1), &core.Instance{})
+			ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{outboundSession})
+			ctx = session.ContextWithContent(ctx, &session.Content{SniffingRequest: session.SniffingRequest{
+				Enabled:                        true,
+				OverrideDestinationForProtocol: []string{test.override},
+				LogSniffedDestination:          true,
+			}})
+			ctx = log.ContextWithAccessMessage(ctx, message)
+
+			inbound, err := dispatcher.Dispatch(ctx, test.original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer common.Interrupt(inbound.Reader)
+			defer common.Close(inbound.Writer)
+			if err := inbound.Writer.WriteMultiBuffer(buf.MergeBytes(nil, test.payload)); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-handler.dispatched:
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for asynchronous dispatch")
+			}
+
+			expectedTarget := test.original
+			expectedTarget.Address = net.DomainAddress(test.domain)
+			if outboundSession.OriginalTarget != test.original || outboundSession.Target != expectedTarget || outboundSession.RouteTarget.IsValid() {
+				t.Fatalf("unexpected routing state: original=%v target=%v routeTarget=%v", outboundSession.OriginalTarget, outboundSession.Target, outboundSession.RouteTarget)
+			}
+			expected := "from tcp:198.51.100.10:50000 accepted " + expectedTarget.String() + " [direct] email: 3 original: " + test.original.String() + " sniffed: " + test.source
+			if got := message.String(); got != expected {
+				t.Fatalf("access message = %q, want %q", got, expected)
+			}
+		})
+	}
+}
+
+func TestDispatchTCPOptInKeepsOriginalForNoSNIAndIncompleteClientHello(t *testing.T) {
+	clientHello := captureTLSClientHello(t, "tls.example.com")
+	tests := []struct {
+		name    string
+		payload []byte
+	}{
+		{"no sni", captureTLSClientHello(t, "")},
+		{"incomplete client hello", clientHello[:20]},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := &auditOutboundHandler{dispatched: make(chan context.Context, 1)}
+			dispatcher := &DefaultDispatcher{ohm: &auditOutboundManager{handler: handler}}
+			original := net.TCPDestination(net.ParseAddress("203.0.113.20"), 443)
+			outboundSession := &session.Outbound{}
+			message := &log.AccessMessage{
+				From:   net.TCPDestination(net.ParseAddress("198.51.100.10"), 50000),
+				To:     original,
+				Status: log.AccessAccepted,
+				Email:  "3",
+			}
+			ctx := context.WithValue(context.Background(), core.XrayKey(1), &core.Instance{})
+			ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{outboundSession})
+			ctx = session.ContextWithContent(ctx, &session.Content{SniffingRequest: session.SniffingRequest{
+				Enabled:                        true,
+				OverrideDestinationForProtocol: []string{"tls"},
+				LogSniffedDestination:          true,
+			}})
+			ctx = log.ContextWithAccessMessage(ctx, message)
+
+			inbound, err := dispatcher.Dispatch(ctx, original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer common.Interrupt(inbound.Reader)
+			if err := inbound.Writer.WriteMultiBuffer(buf.MergeBytes(nil, test.payload)); err != nil {
+				t.Fatal(err)
+			}
+			common.Close(inbound.Writer)
+			select {
+			case <-handler.dispatched:
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for asynchronous dispatch")
+			}
+
+			if outboundSession.OriginalTarget != original || outboundSession.Target != original || outboundSession.RouteTarget.IsValid() {
+				t.Fatalf("unexpected routing state: original=%v target=%v routeTarget=%v", outboundSession.OriginalTarget, outboundSession.Target, outboundSession.RouteTarget)
+			}
+			if message.OriginalDestination != nil || message.SniffedProtocol != "" {
+				t.Fatalf("negative TLS case added audit fields: %+v", message)
+			}
+			if got, want := message.String(), "from tcp:198.51.100.10:50000 accepted tcp:203.0.113.20:443 [direct] email: 3"; got != want {
+				t.Fatalf("access message = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func captureTLSClientHello(t *testing.T, serverName string) []byte {
 	t.Helper()
 	clientConn, serverConn := stdnet.Pipe()
