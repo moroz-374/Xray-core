@@ -28,6 +28,10 @@ message SniffingConfig {
   bool metadata_only = 4;
 
   bool route_only = 5;
+
+  // Whether to include a validated sniffed destination and its original
+  // destination in the accepted access message.
+  bool log_sniffed_destination = 6;
 }
 
 message ReceiverConfig {

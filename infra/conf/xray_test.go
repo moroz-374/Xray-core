@@ -199,6 +199,66 @@ func TestMuxConfig_Build(t *testing.T) {
 	}
 }
 
+func TestSniffingConfigBuildLogSniffedDestination(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "absent", input: `{}`, want: false},
+		{name: "null", input: `{"logSniffedDestination": null}`, want: false},
+		{name: "false", input: `{"logSniffedDestination": false}`, want: false},
+		{name: "true", input: `{"logSniffedDestination": true}`, want: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := new(SniffingConfig)
+			if err := json.Unmarshal([]byte(test.input), config); err != nil {
+				t.Fatalf("failed to parse sniffing config: %v", err)
+			}
+
+			built, err := config.Build()
+			if err != nil {
+				t.Fatalf("failed to build sniffing config: %v", err)
+			}
+			if built.LogSniffedDestination != test.want {
+				t.Fatalf("LogSniffedDestination = %v, want %v", built.LogSniffedDestination, test.want)
+			}
+		})
+	}
+}
+
+func TestSniffingConfigLogSniffedDestinationDescriptor(t *testing.T) {
+	fields := (&proxyman.SniffingConfig{}).ProtoReflect().Descriptor().Fields()
+	field := fields.ByName("log_sniffed_destination")
+	if field == nil {
+		t.Fatal("log_sniffed_destination descriptor is missing")
+	}
+	if field.Number() != 6 {
+		t.Fatalf("log_sniffed_destination field number = %d, want 6", field.Number())
+	}
+	if field.JSONName() != "logSniffedDestination" {
+		t.Fatalf("log_sniffed_destination JSON name = %q, want %q", field.JSONName(), "logSniffedDestination")
+	}
+}
+
+func TestSniffingConfigRejectsInvalidLogSniffedDestination(t *testing.T) {
+	tests := []string{
+		`{"logSniffedDestination": "true"}`,
+		`{"logSniffedDestination": 1}`,
+		`{"logSniffedDestination": {}}`,
+		`{"logSniffedDestination": []}`,
+	}
+
+	for _, input := range tests {
+		config := new(SniffingConfig)
+		if err := json.Unmarshal([]byte(input), config); err == nil {
+			t.Fatalf("expected invalid logSniffedDestination to fail: %s", input)
+		}
+	}
+}
+
 func TestConfig_Override(t *testing.T) {
 	tests := []struct {
 		name string

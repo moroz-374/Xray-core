@@ -71,10 +71,13 @@ type SniffingConfig struct {
 	// Whether should only try to sniff metadata without waiting for client input.
 	// Can be used to support SMTP like protocol where server send the first
 	// message.
-	MetadataOnly  bool `protobuf:"varint,4,opt,name=metadata_only,json=metadataOnly,proto3" json:"metadata_only,omitempty"`
-	RouteOnly     bool `protobuf:"varint,5,opt,name=route_only,json=routeOnly,proto3" json:"route_only,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	MetadataOnly bool `protobuf:"varint,4,opt,name=metadata_only,json=metadataOnly,proto3" json:"metadata_only,omitempty"`
+	RouteOnly    bool `protobuf:"varint,5,opt,name=route_only,json=routeOnly,proto3" json:"route_only,omitempty"`
+	// Whether to include a validated sniffed destination and its original
+	// destination in the accepted access message.
+	LogSniffedDestination bool `protobuf:"varint,6,opt,name=log_sniffed_destination,json=logSniffedDestination,proto3" json:"log_sniffed_destination,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *SniffingConfig) Reset() {
@@ -138,6 +141,13 @@ func (x *SniffingConfig) GetMetadataOnly() bool {
 func (x *SniffingConfig) GetRouteOnly() bool {
 	if x != nil {
 		return x.RouteOnly
+	}
+	return false
+}
+
+func (x *SniffingConfig) GetLogSniffedDestination() bool {
+	if x != nil {
+		return x.LogSniffedDestination
 	}
 	return false
 }
@@ -478,14 +488,15 @@ var File_app_proxyman_config_proto protoreflect.FileDescriptor
 const file_app_proxyman_config_proto_rawDesc = "" +
 	"\n" +
 	"\x19app/proxyman/config.proto\x12\x11xray.app.proxyman\x1a\x18common/net/address.proto\x1a\x15common/net/port.proto\x1a\x1ftransport/internet/config.proto\x1a!common/serial/typed_message.proto\"\x0f\n" +
-	"\rInboundConfig\"\xcc\x01\n" +
+	"\rInboundConfig\"\x84\x02\n" +
 	"\x0eSniffingConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x121\n" +
 	"\x14destination_override\x18\x02 \x03(\tR\x13destinationOverride\x12)\n" +
 	"\x10domains_excluded\x18\x03 \x03(\tR\x0fdomainsExcluded\x12#\n" +
 	"\rmetadata_only\x18\x04 \x01(\bR\fmetadataOnly\x12\x1d\n" +
 	"\n" +
-	"route_only\x18\x05 \x01(\bR\trouteOnly\"\xe5\x02\n" +
+	"route_only\x18\x05 \x01(\bR\trouteOnly\x126\n" +
+	"\x17log_sniffed_destination\x18\x06 \x01(\bR\x15logSniffedDestination\"\xe5\x02\n" +
 	"\x0eReceiverConfig\x126\n" +
 	"\tport_list\x18\x01 \x01(\v2\x19.xray.common.net.PortListR\bportList\x123\n" +
 	"\x06listen\x18\x02 \x01(\v2\x1b.xray.common.net.IPOrDomainR\x06listen\x12N\n" +
