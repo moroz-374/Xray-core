@@ -64,6 +64,7 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 				ExcludeForDomain:               receiverConfig.SniffingSettings.DomainsExcluded,
 				MetadataOnly:                   receiverConfig.SniffingSettings.MetadataOnly,
 				RouteOnly:                      receiverConfig.SniffingSettings.RouteOnly,
+				LogSniffedDestination:          receiverConfig.SniffingSettings.LogSniffedDestination,
 			},
 		})
 	}

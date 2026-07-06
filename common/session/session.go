@@ -83,6 +83,7 @@ type SniffingRequest struct {
 	Enabled                        bool
 	MetadataOnly                   bool
 	RouteOnly                      bool
+	LogSniffedDestination          bool
 }
 
 // Content is the metadata of the connection content. Mainly used for routing.

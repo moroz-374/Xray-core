@@ -109,6 +109,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 					ExcludeForDomain:               sc.DomainsExcluded,
 					MetadataOnly:                   sc.MetadataOnly,
 					RouteOnly:                      sc.RouteOnly,
+					LogSniffedDestination:          sc.LogSniffedDestination,
 				},
 			})
 		}
