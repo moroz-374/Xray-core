@@ -20,13 +20,33 @@ const (
 	AccessRejected = AccessStatus("rejected")
 )
 
+// AccessDestination is a typed destination that can be included in an access
+// message without coupling the log package to common/net.
+type AccessDestination interface {
+	String() string
+}
+
+// SniffedProtocol identifies the domain-bearing sniffer result used for an
+// extended access message.
+type SniffedProtocol string
+
+const (
+	SniffedProtocolHTTP          SniffedProtocol = "http"
+	SniffedProtocolTLS           SniffedProtocol = "tls"
+	SniffedProtocolQUIC          SniffedProtocol = "quic"
+	SniffedProtocolFakeDNS       SniffedProtocol = "fakedns"
+	SniffedProtocolFakeDNSOthers SniffedProtocol = "fakedns+others"
+)
+
 type AccessMessage struct {
-	From   interface{}
-	To     interface{}
-	Status AccessStatus
-	Reason interface{}
-	Email  string
-	Detour string
+	From                interface{}
+	To                  interface{}
+	Status              AccessStatus
+	Reason              interface{}
+	Email               string
+	Detour              string
+	OriginalDestination AccessDestination
+	SniffedProtocol     SniffedProtocol
 }
 
 func (m *AccessMessage) String() string {
@@ -53,6 +73,13 @@ func (m *AccessMessage) String() string {
 	if len(m.Email) > 0 {
 		builder.WriteString(" email: ")
 		builder.WriteString(m.Email)
+	}
+
+	if m.OriginalDestination != nil && len(m.SniffedProtocol) > 0 {
+		builder.WriteString(" original: ")
+		builder.WriteString(m.OriginalDestination.String())
+		builder.WriteString(" sniffed: ")
+		builder.WriteString(string(m.SniffedProtocol))
 	}
 
 	return builder.String()
