@@ -35,6 +35,28 @@ func TestAccessMessageLegacyFormat(t *testing.T) {
 			expected: "from tcp:198.51.100.10:50000 accepted udp:203.0.113.20:443 [vless-in >> direct] email: 1001",
 		},
 		{
+			name: "accepted with email only",
+			message: log.AccessMessage{
+				From:   net.TCPDestination(net.ParseAddress("198.51.100.10"), 50000),
+				To:     net.TCPDestination(net.DomainAddress("example.com"), 443),
+				Status: log.AccessAccepted,
+				Email:  "alice@example.com",
+			},
+			expected: "from tcp:198.51.100.10:50000 accepted tcp:example.com:443 email: alice@example.com",
+		},
+		{
+			name: "accepted field order",
+			message: log.AccessMessage{
+				From:   net.TCPDestination(net.ParseAddress("198.51.100.10"), 50000),
+				To:     net.TCPDestination(net.DomainAddress("example.com"), 443),
+				Status: log.AccessAccepted,
+				Detour: "http-in >> direct",
+				Reason: "policy note",
+				Email:  "alice@example.com",
+			},
+			expected: "from tcp:198.51.100.10:50000 accepted tcp:example.com:443 [http-in >> direct] policy note email: alice@example.com",
+		},
+		{
 			name: "rejected with reason",
 			message: log.AccessMessage{
 				From:   net.TCPDestination(net.ParseAddress("198.51.100.10"), 50000),
@@ -89,6 +111,13 @@ func TestAccessMessageExtendedFormat(t *testing.T) {
 			expected: "from tcp:198.51.100.10:50000 accepted udp:example.com:443 [vless-in >> direct] email: 1001 original: udp:origin.example:443 sniffed: quic",
 		},
 		{
+			name:     "udp ipv4 original",
+			to:       net.UDPDestination(net.DomainAddress("example.com"), 443),
+			original: net.UDPDestination(net.ParseAddress("203.0.113.20"), 443),
+			protocol: log.SniffedProtocolFakeDNS,
+			expected: "from tcp:198.51.100.10:50000 accepted udp:example.com:443 [vless-in >> direct] email: 1001 original: udp:203.0.113.20:443 sniffed: fakedns",
+		},
+		{
 			name:     "udp ipv6 fakedns original",
 			to:       net.UDPDestination(net.DomainAddress("example.com"), 443),
 			original: net.UDPDestination(net.ParseAddress("2001:db8::20"), 443),
@@ -113,6 +142,20 @@ func TestAccessMessageExtendedFormat(t *testing.T) {
 				t.Fatalf("unexpected access message\nexpected: %q\nactual:   %q", test.expected, actual)
 			}
 		})
+	}
+}
+
+func TestAccessMessageExtendedFormatWithoutOptionalLegacyFields(t *testing.T) {
+	message := log.AccessMessage{
+		From:                net.UDPDestination(net.ParseAddress("198.51.100.10"), 50000),
+		To:                  net.UDPDestination(net.DomainAddress("example.com"), 443),
+		Status:              log.AccessAccepted,
+		OriginalDestination: net.UDPDestination(net.ParseAddress("203.0.113.20"), 443),
+		SniffedProtocol:     log.SniffedProtocolQUIC,
+	}
+	expected := "from udp:198.51.100.10:50000 accepted udp:example.com:443 original: udp:203.0.113.20:443 sniffed: quic"
+	if actual := message.String(); actual != expected {
+		t.Fatalf("unexpected access message\nexpected: %q\nactual:   %q", expected, actual)
 	}
 }
 
