@@ -2,6 +2,9 @@ package dispatcher
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/hex"
+	stdnet "net"
 	"testing"
 	"time"
 
@@ -164,4 +167,105 @@ func TestDispatchLinkMatchesDispatchAuditBehavior(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDispatchDefaultOffPreservesLegacyLogAndRouting(t *testing.T) {
+	tlsPayload := captureTLSClientHello(t, "tls.example.com")
+	quicPayload, err := hex.DecodeString("cd0000000108f1fb7bcc78aa5e7203a8f86400421531fe825b19541876db6c55c38890cd73149d267a084afee6087304095417a3033df6a81bbb71d8512e7a3e16df1e277cae5df3182cb214b8fe982ba3fdffbaa9ffec474547d55945f0fddbeadfb0b5243890b2fa3da45169e2bd34ec04b2e29382f48d612b28432a559757504d158e9e505407a77dd34f4b60b8d3b555ee85aacd6648686802f4de25e7216b19e54c5f78e8a5963380c742d861306db4c16e4f7fc94957aa50b9578a0b61f1e406b2ad5f0cd3cd271c4d99476409797b0c3cb3efec256118912d4b7e4fd79d9cb9016b6e5eaa4f5e57b637b217755daf8968a4092bed0ed5413f5d04904b3a61e4064f9211b2629e5b52a89c7b19f37a713e41e27743ea6dfa736dfa1bb0a4b2bc8c8dc632c6ce963493a20c550e6fdb2475213665e9a85cfc394da9cec0cf41f0c8abed3fc83be5245b2b5aa5e825d29349f721d30774ef5bf965b540f3d8d98febe20956b1fc8fa047e10e7d2f921c9c6622389e02322e80621a1cf5264e245b7276966eb02932584e3f7038bd36aa908766ad3fb98344025dec18670d6db43a1c5daac00937fce7b7c7d61ff4e6efd01a2bdee0ee183108b926393df4f3d74bbcbb015f240e7e346b7d01c41111a401225ce3b095ab4623a5836169bf9599eeca79d1d2e9b2202b5960a09211e978058d6fc0484eff3e91ce4649a5e3ba15b906d334cf66e28d9ff575406e1ae1ac2febafd72870b6f5d58fc5fb949cb1f40feb7c1d9ce5e71b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	protocols := []struct {
+		name           string
+		original       net.Destination
+		payload        []byte
+		override       string
+		expectedDomain string
+	}{
+		{"http", net.TCPDestination(net.ParseAddress("203.0.113.20"), 80), []byte("GET / HTTP/1.1\r\nHost: http.example.com\r\n\r\n"), "http", "http.example.com"},
+		{"tls", net.TCPDestination(net.ParseAddress("203.0.113.20"), 443), tlsPayload, "tls", "tls.example.com"},
+		{"quic", net.UDPDestination(net.ParseAddress("203.0.113.20"), 443), quicPayload, "quic", "www.google.com"},
+	}
+
+	for _, flagState := range []string{"absent", "false"} {
+		for _, protocol := range protocols {
+			t.Run(flagState+"/"+protocol.name, func(t *testing.T) {
+				handler := &auditOutboundHandler{dispatched: make(chan context.Context, 1)}
+				dispatcher := &DefaultDispatcher{ohm: &auditOutboundManager{handler: handler}}
+				outboundSession := &session.Outbound{}
+				message := &log.AccessMessage{
+					From:   net.TCPDestination(net.ParseAddress("198.51.100.10"), 50000),
+					To:     protocol.original,
+					Status: log.AccessAccepted,
+					Email:  "3",
+				}
+				request := session.SniffingRequest{
+					Enabled:                        true,
+					OverrideDestinationForProtocol: []string{protocol.override},
+				}
+				if flagState == "false" {
+					request.LogSniffedDestination = false
+				}
+				content := &session.Content{SniffingRequest: request}
+				ctx := context.WithValue(context.Background(), core.XrayKey(1), &core.Instance{})
+				ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{outboundSession})
+				ctx = session.ContextWithContent(ctx, content)
+				ctx = log.ContextWithAccessMessage(ctx, message)
+
+				inbound, err := dispatcher.Dispatch(ctx, protocol.original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer common.Interrupt(inbound.Reader)
+				defer common.Close(inbound.Writer)
+				if err := inbound.Writer.WriteMultiBuffer(buf.MergeBytes(nil, protocol.payload)); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-handler.dispatched:
+				case <-time.After(3 * time.Second):
+					t.Fatal("timed out waiting for asynchronous dispatch")
+				}
+
+				if content.Protocol == "" {
+					t.Fatal("payload was not successfully sniffed")
+				}
+				expectedTarget := protocol.original
+				expectedTarget.Address = net.DomainAddress(protocol.expectedDomain)
+				if outboundSession.OriginalTarget != protocol.original || outboundSession.Target != expectedTarget || outboundSession.RouteTarget.IsValid() {
+					t.Fatalf("routing changed: original=%v target=%v routeTarget=%v", outboundSession.OriginalTarget, outboundSession.Target, outboundSession.RouteTarget)
+				}
+				if message.To != protocol.original || message.OriginalDestination != nil || message.SniffedProtocol != "" {
+					t.Fatalf("default-off message mutated: %+v", message)
+				}
+				if got, want := message.String(), "from tcp:198.51.100.10:50000 accepted "+protocol.original.String()+" [direct] email: 3"; got != want {
+					t.Fatalf("access message = %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func captureTLSClientHello(t *testing.T, serverName string) []byte {
+	t.Helper()
+	clientConn, serverConn := stdnet.Pipe()
+	client := tls.Client(clientConn, &tls.Config{ServerName: serverName, InsecureSkipVerify: true}) //nolint:gosec -- test-only capture
+	done := make(chan struct{})
+	go func() {
+		_ = client.Handshake()
+		close(done)
+	}()
+	if err := serverConn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 4096)
+	n, err := serverConn.Read(payload)
+	_ = serverConn.Close()
+	_ = clientConn.Close()
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload[:n]
 }
