@@ -1,6 +1,6 @@
 # Traffic audit logging and sniffing path inventory
 
-Status: X-02 inventory for upstream `v26.3.27` (`d2758a023cd7f4174a5a5fa4ff66e487d4342ba0`).
+Status: X-02 inventory for upstream `v26.3.27` (`d2758a023cd7f4174a5a5fa4ff66e487d4342ba0`), implementation closure updated by X-12.
 
 This document records the inbound access-log, dispatcher, and sniffing paths that the opt-in traffic-audit patch must preserve. It is an implementation inventory, not the final log grammar or configuration contract.
 
@@ -62,7 +62,7 @@ The future logging helper therefore belongs after successful `shouldOverride` in
 | TUN | Per-flow TCP/UDP destination from stack, IPv4/IPv6 | Accepted message per flow; no user identity | Cached `SniffingRequest`, then `DispatchLink` | IPv4/IPv6, system DNS, FakeDNS, concurrent flows and copied request integrity |
 | WireGuard inbound | UDP carrier; inner TCP/UDP destination per netstack connection | Accepted message per inner flow; no user email; source is intentionally a null destination | Copied parent `SniffingRequest`, then `DispatchLink` | IPv4/IPv6 peers, inner TCP/UDP, FakeDNS, concurrent flow isolation |
 | Hysteria TCP | Hysteria transport exposes proxied TCP target in request | Accepted message with transport-authenticated user email; rejected header recorded directly | `DispatchLink` | Real proxied TCP payload, authenticated identity, outer transport SNI must not replace destination SNI |
-| Hysteria UDP | Inter-UDP connection; first proxied UDP target initializes reader/writer | **No `AccessMessage` is created today** | Direct `DispatchLink` for the first destination | Mandatory gap test: UDP/QUIC must not be claimed covered until a contextual message and destination semantics are defined |
+| Hysteria UDP | Inter-UDP connection; first proxied UDP target initializes reader/writer | X-12 adds one accepted contextual message for that first destination with the transport-authenticated user email | Direct `DispatchLink` for the first destination | UDP/QUIC payload sniffing uses the common helper; first-destination semantics match the existing fixed reader/writer association |
 
 No other type under `proxy/` implements the inbound `Network`/`Process` contract at this pinned revision. Outbound-only handlers, loopback, reverse, DNS, observatory, and tagged dialing can invoke the global dispatcher but are not new authenticated inbound protocol families.
 
@@ -79,7 +79,7 @@ No other type under `proxy/` implements the inbound `Network`/`Process` contract
 
 ## Known coverage gaps that later tasks must resolve
 
-1. Hysteria UDP has no contextual access message and therefore cannot emit a normal accepted access record.
+1. Hysteria UDP lacked a contextual access message in the upstream baseline. X-12 closes this gap at the established first-destination boundary; protocol integration coverage remains required by X-17/X-25.
 2. HTTP Basic-auth and SOCKS authenticated paths keep identity in `session.Inbound.User` but omit `AccessMessage.Email`; the traffic-audit patch must not silently invent attribution. A separate explicit decision/test is required.
 3. TUN and WireGuard correctly copy `SniffingRequest`, but their per-flow messages are anonymous. Tests must prove that concurrent inner flows do not share mutable audit fields.
 4. Mux creates a message per logical stream, while XUDP can detach and reattach a ray by global ID. Tests must cover rebind and simultaneous destinations.
@@ -90,3 +90,15 @@ No other type under `proxy/` implements the inbound `Network`/`Process` contract
 ## Completion mapping
 
 Every pinned inbound handler is classified above with its networks, identity source, destination source, dispatcher entry point, and required test family. X-03 must use this inventory when defining grammar; X-05 must turn each required-test cell and each known gap into a traceable matrix row. X-08 and X-12 must repeat the static searches to detect newly introduced constructors or missed `SniffingRequest` copies.
+
+## X-12 implementation closure
+
+The X-12 repeat audit found 51 production `Dispatch`/`DispatchLink` call sites and the same two explicit `SniffingRequest` literals classified by X-08. There are 34 production `AccessMessage` literal hits after adding the single Hysteria UDP adapter; no new inbound handler was found. The implementation closes the matrix as follows:
+
+- VLESS, VMess, Trojan, Shadowsocks legacy/2022, SOCKS, HTTP, dokodemo-door, TUN, WireGuard, and Hysteria TCP create or preserve a contextual accepted message before reaching the common `Dispatch`/`DispatchLink` helper. No protocol-specific audit mutation is required.
+- Mux/XUDP continues to create a message per logical stream in `common/mux.Server`; UDP dispatcher and singbridge wrappers preserve the packet/connection context passed to the global dispatcher. Their concurrency assertions remain assigned to later matrix tasks rather than duplicated in protocol handlers.
+- Hysteria UDP now creates the missing accepted message immediately after its valid first proxied destination is assembled and before `DispatchLink`. The adapter uses the transport remote address and authenticated email already available to the TCP path; it does not alter payload, destination, routing, or writer association.
+- HTTP Basic-auth and SOCKS auth identity omissions remain explicit upstream-compatible limitations. X-12 does not infer `Email` from mutable session state or change existing access-log identity semantics.
+- Rejected handshakes, internal DNS access records, reverse/loopback/tagged internal dispatch, and any path without a contextual accepted message remain N/A for the extended suffix. The common helper is a no-op for them and no synthetic user event is introduced.
+
+Accordingly, every applicable inbound path reaches the common helper, while every non-applicable path has an explicit reason. Protocol, UDP reuse, Mux/XUDP, and concurrent-flow behavioral proof remains in the X-14 through X-25 test tasks defined by the approved specification.

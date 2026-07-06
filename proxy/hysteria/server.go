@@ -141,6 +141,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 			buf:    make([]byte, MaxUDPSize),
 			addr:   firstMsg.Addr,
 		}
+		ctx = contextWithHysteriaUDPAccessMessage(ctx, conn.RemoteAddr(), firstDest, useremail)
 
 		return dispatcher.DispatchLink(ctx, firstDest, &transport.Link{
 			Reader: reader,
@@ -189,6 +190,16 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 			Writer: bufferedWriter,
 		})
 	}
+}
+
+func contextWithHysteriaUDPAccessMessage(ctx context.Context, from interface{}, destination net.Destination, email string) context.Context {
+	return log.ContextWithAccessMessage(ctx, &log.AccessMessage{
+		From:   from,
+		To:     destination,
+		Status: log.AccessAccepted,
+		Reason: "",
+		Email:  email,
+	})
 }
 
 func init() {
