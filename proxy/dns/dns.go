@@ -289,13 +289,17 @@ func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string,
 
 	switch qType {
 	case dnsmessage.TypeA:
-		for i, ip := range ips {
-			ips[i] = ip.To4()
+		normalized := make([]net.IP, 0, len(ips))
+		for _, ip := range ips {
+			normalized = append(normalized, ip.To4())
 		}
+		ips = normalized
 	case dnsmessage.TypeAAAA:
-		for i, ip := range ips {
-			ips[i] = ip.To16()
+		normalized := make([]net.IP, 0, len(ips))
+		for _, ip := range ips {
+			normalized = append(normalized, ip.To16())
 		}
+		ips = normalized
 	}
 
 	b := buf.New()

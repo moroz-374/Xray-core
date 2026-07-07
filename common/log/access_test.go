@@ -8,6 +8,10 @@ import (
 	"github.com/xtls/xray-core/common/net"
 )
 
+type fuzzAccessDestination string
+
+func (d fuzzAccessDestination) String() string { return string(d) }
+
 func TestAccessMessageLegacyFormat(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -178,5 +182,47 @@ func TestAccessMessageExtendedFieldsAreAtomic(t *testing.T) {
 	withProtocolOnly.SniffedProtocol = log.SniffedProtocolTLS
 	if actual := withProtocolOnly.String(); actual != expected {
 		t.Fatalf("protocol-only field changed legacy output: %q", actual)
+	}
+}
+
+func FuzzAccessMessageString(f *testing.F) {
+	f.Add("tcp:198.51.100.10:50000", "tcp:example.com:443", "1001", "", "tcp:203.0.113.20:443", "tls")
+	f.Add("", "", "", "invalid request", "", "")
+	f.Fuzz(func(t *testing.T, from, to, email, reason, original, protocol string) {
+		for _, value := range []string{from, to, email, reason, original, protocol} {
+			if len(value) > 4096 {
+				t.Skip()
+			}
+		}
+		message := log.AccessMessage{
+			From:            from,
+			To:              to,
+			Status:          log.AccessAccepted,
+			Reason:          reason,
+			Email:           email,
+			SniffedProtocol: log.SniffedProtocol(protocol),
+		}
+		if original != "" {
+			message.OriginalDestination = fuzzAccessDestination(original)
+		}
+		first := message.String()
+		if second := message.String(); first != second {
+			t.Fatalf("formatter is not deterministic: %q != %q", first, second)
+		}
+	})
+}
+
+func TestAccessMessageStringAllocationBound(t *testing.T) {
+	message := log.AccessMessage{
+		From:                net.TCPDestination(net.ParseAddress("198.51.100.10"), 50000),
+		To:                  net.TCPDestination(net.DomainAddress("example.com"), 443),
+		Status:              log.AccessAccepted,
+		Detour:              "vless-in >> direct",
+		Email:               "1001",
+		OriginalDestination: net.TCPDestination(net.ParseAddress("203.0.113.20"), 443),
+		SniffedProtocol:     log.SniffedProtocolTLS,
+	}
+	if allocations := testing.AllocsPerRun(1000, func() { _ = message.String() }); allocations > 16 {
+		t.Fatalf("unexpected formatter allocation growth: %.2f allocations/run", allocations)
 	}
 }

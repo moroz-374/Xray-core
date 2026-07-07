@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -54,6 +55,27 @@ func TestInboundHandlerAuditCompatibilityMatrix(t *testing.T) {
 				}
 			} else if message.SniffedProtocol != log.SniffedProtocolHTTP || outboundSession.Target.Address.Domain() != "handler.example.com" {
 				t.Fatalf("TCP audit mismatch: source=%q target=%v", message.SniffedProtocol, outboundSession.Target)
+			}
+		})
+	}
+}
+
+func TestAuditConcurrentTCPUDPUserBurst(t *testing.T) {
+	for index := range 64 {
+		index := index
+		t.Run(fmt.Sprintf("flow-%02d", index), func(t *testing.T) {
+			t.Parallel()
+			network := net.Network_TCP
+			if index%2 == 1 {
+				network = net.Network_UDP
+			}
+			email := fmt.Sprintf("user-%02d", index)
+			message, outbound := runInboundCompatibilityCase(t, false, network, email)
+			if message.Email != email {
+				t.Fatalf("identity leaked: got %q, want %q", message.Email, email)
+			}
+			if message.OriginalDestination == nil || outbound.OriginalTarget.String() != message.OriginalDestination.String() {
+				t.Fatalf("original destination crossed flow: outbound=%v message=%v", outbound.OriginalTarget, message.OriginalDestination)
 			}
 		})
 	}
