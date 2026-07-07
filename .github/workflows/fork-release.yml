@@ -1,0 +1,267 @@
+name: Fork Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (for example, v26.3.27-rw.1)"
+        required: true
+        type: string
+      ref:
+        description: "Exact tag, branch, or commit to build"
+        required: true
+        type: string
+      publish:
+        description: "Create a GitHub prerelease and attest its assets"
+        required: true
+        default: false
+        type: boolean
+      confirmation:
+        description: "DRY-RUN, or PUBLISH <version> when publish is enabled"
+        required: true
+        default: "DRY-RUN"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  BASE_TAG: v26.3.27
+
+jobs:
+  validate:
+    name: Validate release inputs
+    runs-on: ubuntu-latest
+    outputs:
+      source-sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Checkout requested source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate version, base, ref, and confirmation
+        id: source
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          INPUT_REF: ${{ inputs.ref }}
+          PUBLISH: ${{ inputs.publish }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${VERSION}" =~ ^v26\.3\.27-rw\.[1-9][0-9]*$ ]]; then
+            echo "Version must match v26.3.27-rw.<positive integer>."
+            exit 1
+          fi
+
+          source_sha="$(git rev-parse 'HEAD^{commit}')"
+          requested_sha="$(git rev-parse "${INPUT_REF}^{commit}")"
+          test "${source_sha}" = "${requested_sha}"
+          git merge-base --is-ancestor "${BASE_TAG}" "${source_sha}"
+
+          if [[ "${PUBLISH}" == "true" ]]; then
+            test "${CONFIRMATION}" = "PUBLISH ${VERSION}"
+            git show-ref --verify --quiet "refs/tags/${VERSION}"
+            tag_sha="$(git rev-list -n 1 "${VERSION}")"
+            test "${tag_sha}" = "${source_sha}"
+          else
+            test "${CONFIRMATION}" = "DRY-RUN"
+          fi
+
+          echo "sha=${source_sha}" >> "${GITHUB_OUTPUT}"
+          echo "Validated ${VERSION} from ${source_sha} against ${BASE_TAG}."
+
+  build:
+    name: Build ${{ matrix.asset-name }}
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            asset-name: Xray-linux-64
+          - goarch: arm64
+            asset-name: Xray-linux-arm64-v8a
+    env:
+      GOOS: linux
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: "0"
+      SOURCE_DATE_EPOCH: "1767225600"
+    steps:
+      - name: Checkout validated source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate.outputs.source-sha }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Download modules
+        run: go mod download
+      - name: Build Xray
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p build_assets
+          marker="${VERSION}@${SOURCE_SHA}"
+          go build \
+            -o build_assets/xray \
+            -trimpath \
+            -buildvcs=false \
+            -gcflags="all=-l=4" \
+            -ldflags="-X github.com/xtls/xray-core/core.build=${marker} -s -w -buildid=" \
+            ./main
+          test "$(go env GOOS)" = "linux"
+          test "$(go env GOARCH)" = "${GOARCH}"
+          file build_assets/xray
+      - name: Download and verify upstream geodata
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in geoip geosite; do
+            base="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/${name}.dat"
+            curl --fail --location --retry 3 "${base}" --output "build_assets/${name}.dat"
+            curl --fail --location --retry 3 "${base}.sha256sum" --output "${RUNNER_TEMP}/${name}.sha256sum"
+            expected="$(awk '{print $1}' "${RUNNER_TEMP}/${name}.sha256sum")"
+            actual="$(openssl dgst -sha256 "build_assets/${name}.dat" | awk '{print $NF}')"
+            test "${actual}" = "${expected}"
+          done
+      - name: Copy license and documentation
+        run: |
+          cp LICENSE build_assets/LICENSE
+          cp README.md build_assets/README.md
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: build_assets/xray
+          format: spdx-json
+          output-file: build_assets/${{ matrix.asset-name }}.spdx.json
+          upload-artifact: false
+      - name: Create deterministic archive and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          find build_assets -type f -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
+          (
+            cd build_assets
+            zip -X -9 -r "../${{ matrix.asset-name }}.zip" .
+          )
+          sha256sum "${{ matrix.asset-name }}.zip" > "${{ matrix.asset-name }}.zip.sha256"
+          sha256sum --check "${{ matrix.asset-name }}.zip.sha256"
+          cp "build_assets/${{ matrix.asset-name }}.spdx.json" .
+      - name: Upload dry-run assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset-name }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ matrix.asset-name }}.zip
+            ${{ matrix.asset-name }}.zip.sha256
+            ${{ matrix.asset-name }}.spdx.json
+
+  verify:
+    name: Verify release assets
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download built assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: Xray-linux-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify names, checksums, and SBOMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          expected=(
+            Xray-linux-64.zip
+            Xray-linux-64.zip.sha256
+            Xray-linux-64.spdx.json
+            Xray-linux-arm64-v8a.zip
+            Xray-linux-arm64-v8a.zip.sha256
+            Xray-linux-arm64-v8a.spdx.json
+          )
+          for file in "${expected[@]}"; do
+            test -s "${file}"
+          done
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq "${#expected[@]}"
+          sha256sum --check Xray-linux-64.zip.sha256
+          sha256sum --check Xray-linux-arm64-v8a.zip.sha256
+          jq -e '.spdxVersion | startswith("SPDX-")' Xray-linux-64.spdx.json
+          jq -e '.spdxVersion | startswith("SPDX-")' Xray-linux-arm64-v8a.spdx.json
+
+  publish:
+    name: Publish attested prerelease
+    if: inputs.publish
+    needs: [validate, build, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout validated tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.version }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download verified assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: Xray-linux-*
+          path: release-assets
+          merge-multiple: true
+      - name: Reverify checksums
+        working-directory: release-assets
+        run: |
+          sha256sum --check Xray-linux-64.zip.sha256
+          sha256sum --check Xray-linux-arm64-v8a.zip.sha256
+      - name: Attest amd64 asset and SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: release-assets/Xray-linux-64.zip
+          sbom-path: release-assets/Xray-linux-64.spdx.json
+      - name: Attest arm64 asset and SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: release-assets/Xray-linux-arm64-v8a.zip
+          sbom-path: release-assets/Xray-linux-arm64-v8a.spdx.json
+      - name: Create GitHub prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          cat > "${RUNNER_TEMP}/release-notes.md" <<EOF
+          Custom Xray traffic-audit prerelease.
+
+          Source: https://github.com/${GITHUB_REPOSITORY}/tree/${SOURCE_SHA}
+          Base: https://github.com/XTLS/Xray-core/releases/tag/${BASE_TAG}
+          Commit: ${SOURCE_SHA}
+          EOF
+          gh release create "${VERSION}" \
+            --verify-tag \
+            --prerelease \
+            --title "${VERSION}" \
+            --notes-file "${RUNNER_TEMP}/release-notes.md" \
+            release-assets/*.zip \
+            release-assets/*.zip.sha256 \
+            release-assets/*.spdx.json
