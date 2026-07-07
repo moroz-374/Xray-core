@@ -141,6 +141,8 @@ jobs:
       - name: Copy license and documentation
         run: |
           cp LICENSE build_assets/LICENSE
+          cp NOTICE build_assets/NOTICE
+          cp PATCHES.md build_assets/PATCHES.md
           cp README.md build_assets/README.md
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0

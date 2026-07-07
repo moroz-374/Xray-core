@@ -1,0 +1,16 @@
+Xray-core traffic-audit fork
+============================
+
+This distribution is based on XTLS/Xray-core v26.3.27, commit
+d2758a023cd7f4174a5a5fa4ff66e487d4342ba0.
+
+Upstream source: https://github.com/XTLS/Xray-core
+Fork source: https://github.com/moroz-374/Xray-core
+Patch description: PATCHES.md
+
+Xray-core and this fork are distributed under the Mozilla Public License 2.0.
+The complete license text is retained in LICENSE. Upstream copyright and
+attribution notices in source files and project documentation are preserved.
+
+This fork is maintained independently for Remnawave traffic-audit integration.
+It is not an official XTLS release and must not be represented as one.

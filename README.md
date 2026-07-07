@@ -1,5 +1,26 @@
 # Project X
 
+> [!IMPORTANT]
+> This repository is the `moroz-374/Xray-core` traffic-audit fork used by the
+> custom Remnawave node. It is not an official XTLS build. The fork adds an
+> opt-in extended access-log record while preserving upstream output when the
+> option is disabled. See [PATCHES.md](PATCHES.md) for the exact upstream base,
+> patch inventory, compatibility contract, and source-verification procedure.
+
+## Traffic-audit fork
+
+The extension is disabled by default and is configured per inbound with
+`sniffing.logSniffedDestination`. When enabled, a successful HTTP Host, TLS SNI,
+QUIC SNI, or FakeDNS result can be recorded alongside the typed original
+destination and the sniffer source. It does not add DNS inference, decrypt ECH,
+or change the outbound route.
+
+Release assets from this fork use versions such as `v26.3.27-rw.1`. Each binary
+contains a `<version>@<source SHA>` build marker; its GitHub prerelease links to
+the exact public source commit and includes SHA-256 checksums, an SPDX SBOM, and
+GitHub artifact attestations. Operational and parser contracts are documented
+under [`docs/traffic-audit-*`](docs/traffic-audit-config-contract.md).
+
 [Project X](https://github.com/XTLS) originates from XTLS protocol, providing a set of network tools such as [Xray-core](https://github.com/XTLS/Xray-core) and [REALITY](https://github.com/XTLS/REALITY).
 
 [README](https://github.com/XTLS/Xray-core#readme) is open, so feel free to submit your project [here](https://github.com/XTLS/Xray-core/pulls).
@@ -33,7 +54,8 @@
 
 ## License
 
-[Mozilla Public License Version 2.0](https://github.com/XTLS/Xray-core/blob/main/LICENSE)
+[Mozilla Public License Version 2.0](LICENSE). Upstream attribution and fork
+provenance are recorded in [NOTICE](NOTICE) and [PATCHES.md](PATCHES.md).
 
 ## Documentation
 
