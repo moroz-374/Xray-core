@@ -30,7 +30,7 @@ func TestDispatchFakeDNSHitIPv4AndIPv6(t *testing.T) {
 				t.Fatalf("fake address count = %d", len(addresses))
 			}
 			original := net.TCPDestination(addresses[0], 443)
-			message, outboundSession := dispatchFakeDNSPayload(t, engine, original, "1001", nil)
+			message, outboundSession := dispatchFakeDNSPayload(t, engine, original, "1001", nil, false)
 			expectedTarget := net.TCPDestination(net.DomainAddress("mapped.example.com"), 443)
 			if outboundSession.OriginalTarget != original || outboundSession.Target != expectedTarget {
 				t.Fatalf("unexpected targets: original=%v target=%v", outboundSession.OriginalTarget, outboundSession.Target)
@@ -56,7 +56,7 @@ func TestDispatchFakeDNSMissFallsBackToTLSAndQUIC(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			message, outboundSession := dispatchFakeDNSPayload(t, engine, test.original, "1001", test.payload(t))
+			message, outboundSession := dispatchFakeDNSPayload(t, engine, test.original, "1001", test.payload(t), false)
 			expectedTarget := test.original
 			expectedTarget.Address = net.DomainAddress(test.domain)
 			if outboundSession.OriginalTarget != test.original || outboundSession.Target != expectedTarget {
@@ -82,7 +82,7 @@ func TestDispatchFakeDNSLRUMissStaysOriginal(t *testing.T) {
 	}
 
 	original := net.UDPDestination(oldAddress, 443)
-	message, outboundSession := dispatchFakeDNSPayload(t, engine, original, "1001", []byte{0x00, 0x01, 0x02})
+	message, outboundSession := dispatchFakeDNSPayload(t, engine, original, "1001", []byte{0x00, 0x01, 0x02}, false)
 	if outboundSession.OriginalTarget != original || outboundSession.Target != original || outboundSession.RouteTarget.IsValid() {
 		t.Fatalf("LRU miss changed routing: original=%v target=%v routeTarget=%v", outboundSession.OriginalTarget, outboundSession.Target, outboundSession.RouteTarget)
 	}
@@ -107,7 +107,18 @@ func newAuditFakeDNS(t *testing.T, lruSize int64) *fakedns.HolderMulti {
 	return engine
 }
 
-func dispatchFakeDNSPayload(t *testing.T, engine *fakedns.HolderMulti, original net.Destination, email string, payload []byte) (*log.AccessMessage, *session.Outbound) {
+func TestDispatchFakeDNSMetadataOnlyHit(t *testing.T) {
+	engine := newAuditFakeDNS(t, 4)
+	fakeAddress := engine.GetFakeIPForDomain3("metadata.example.com", true, false)[0]
+	original := net.TCPDestination(fakeAddress, 443)
+	message, outboundSession := dispatchFakeDNSPayload(t, engine, original, "1001", nil, true)
+	expectedTarget := net.TCPDestination(net.DomainAddress("metadata.example.com"), 443)
+	if outboundSession.Target != expectedTarget || message.SniffedProtocol != log.SniffedProtocolFakeDNS {
+		t.Fatalf("metadata-only FakeDNS hit: target=%v source=%q", outboundSession.Target, message.SniffedProtocol)
+	}
+}
+
+func dispatchFakeDNSPayload(t *testing.T, engine *fakedns.HolderMulti, original net.Destination, email string, payload []byte, metadataOnly bool) (*log.AccessMessage, *session.Outbound) {
 	t.Helper()
 	handler := &auditOutboundHandler{dispatched: make(chan context.Context, 1)}
 	dispatcher := &DefaultDispatcher{ohm: &auditOutboundManager{handler: handler}, fdns: engine}
@@ -122,6 +133,7 @@ func dispatchFakeDNSPayload(t *testing.T, engine *fakedns.HolderMulti, original 
 	ctx = session.ContextWithContent(ctx, &session.Content{SniffingRequest: session.SniffingRequest{
 		Enabled:                        true,
 		OverrideDestinationForProtocol: []string{"fakedns"},
+		MetadataOnly:                   metadataOnly,
 		LogSniffedDestination:          true,
 	}})
 	ctx = log.ContextWithAccessMessage(ctx, message)

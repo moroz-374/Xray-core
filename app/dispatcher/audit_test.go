@@ -116,3 +116,27 @@ func TestAuditSniffedProtocolCanonicalizesHTTP(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateAuditDestinationPreservesOutboundRoutingState(t *testing.T) {
+	original := net.TCPDestination(net.ParseAddress("203.0.113.20"), 443)
+	routed := net.TCPDestination(net.DomainAddress("example.com"), 443)
+	for _, tag := range []string{"direct", "blocked", "balancer-selected"} {
+		t.Run(tag, func(t *testing.T) {
+			outbound := &session.Outbound{
+				Tag:            tag,
+				OriginalTarget: original,
+				Target:         original,
+				RouteTarget:    routed,
+			}
+			message := &log.AccessMessage{Status: log.AccessAccepted, To: original}
+			ctx := auditContext(true, true, message)
+			ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{outbound})
+
+			updateAuditDestination(ctx, original, routed, "tls")
+
+			if outbound.Tag != tag || outbound.OriginalTarget != original || outbound.Target != original || outbound.RouteTarget != routed {
+				t.Fatalf("outbound routing state changed: %+v", outbound)
+			}
+		})
+	}
+}
