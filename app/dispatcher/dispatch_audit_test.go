@@ -371,6 +371,55 @@ func TestDispatchTCPOptInKeepsOriginalForNoSNIAndIncompleteClientHello(t *testin
 	}
 }
 
+func TestDispatchIgnoresOuterTransportNameAndLogsInnerTLSName(t *testing.T) {
+	handler := &auditOutboundHandler{dispatched: make(chan context.Context, 1)}
+	dispatcher := &DefaultDispatcher{ohm: &auditOutboundManager{handler: handler}}
+	original := net.TCPDestination(net.ParseAddress("203.0.113.20"), 443)
+	outboundSession := &session.Outbound{}
+	message := &log.AccessMessage{
+		From:   net.TCPDestination(net.ParseAddress("198.51.100.10"), 50000),
+		To:     original,
+		Status: log.AccessAccepted,
+		Email:  "transport-user",
+	}
+	content := &session.Content{
+		Protocol: "outer-tls",
+		Attributes: map[string]string{
+			"transport.server_name": "outer-handshake.example",
+		},
+		SniffingRequest: session.SniffingRequest{
+			Enabled:                        true,
+			OverrideDestinationForProtocol: []string{"tls"},
+			LogSniffedDestination:          true,
+		},
+	}
+	ctx := context.WithValue(context.Background(), core.XrayKey(1), &core.Instance{})
+	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{outboundSession})
+	ctx = session.ContextWithContent(ctx, content)
+	ctx = log.ContextWithAccessMessage(ctx, message)
+	inbound, err := dispatcher.Dispatch(ctx, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer common.Interrupt(inbound.Reader)
+	defer common.Close(inbound.Writer)
+	if err := inbound.Writer.WriteMultiBuffer(buf.MergeBytes(nil, captureTLSClientHello(t, "inner-destination.example"))); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handler.dispatched:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for transport-name separation dispatch")
+	}
+
+	if got, want := message.To.(net.Destination).Address.Domain(), "inner-destination.example"; got != want {
+		t.Fatalf("logged domain = %q, want inner %q", got, want)
+	}
+	if message.To.(net.Destination).Address.Domain() == content.Attributes["transport.server_name"] {
+		t.Fatal("outer transport name leaked into audit destination")
+	}
+}
+
 func TestDispatchUDPQUICOptInAddressFamiliesAndIsolation(t *testing.T) {
 	quicPayload := validQUICInitial(t)
 	tests := []struct {
