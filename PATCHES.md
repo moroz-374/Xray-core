@@ -9,7 +9,8 @@
 - Development branch: [`feature/traffic-audit-log`](https://github.com/moroz-374/Xray-core/tree/feature/traffic-audit-log)
 - License: Mozilla Public License 2.0; the upstream `LICENSE` is retained.
 
-Release tags have the form `v26.3.27-rw.<n>`. A release tag, the embedded
+Release tags have the form `v26.3.27-rw.<n>` or
+`v26.3.27-rw.<n>-rc.<n>`. A release tag, the embedded
 `<version>@<source SHA>` build marker, and the source link in the GitHub release
 notes must all identify the same commit. The manual release workflow rejects a
 publish request if the tag, requested ref, and resolved source SHA differ.
