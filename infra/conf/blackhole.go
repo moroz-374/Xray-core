@@ -48,5 +48,4 @@ var configLoader = NewJSONConfigLoader(
 		"http": func() interface{} { return new(HTTPResponse) },
 	},
 	"type",
-	"",
-)
+	"")

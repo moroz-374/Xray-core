@@ -60,7 +60,9 @@ func (s *Sniffer) Sniff(c context.Context, payload []byte, network net.Network) 
 	var pendingSniffer []protocolSnifferWithMetadata
 	for _, si := range s.sniffer {
 		protocolSniffer := si.protocolSniffer
-		if si.metadataSniffer || si.network != network {
+		// Network_Unknown marks network-agnostic composite sniffers such as
+		// fakedns+others, which delegates to its own TCP/UDP-aware children.
+		if si.metadataSniffer || (si.network != net.Network_Unknown && si.network != network) {
 			continue
 		}
 		result, err := protocolSniffer(c, payload)

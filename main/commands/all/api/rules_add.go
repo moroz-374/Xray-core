@@ -38,7 +38,9 @@ Example:
 }
 
 func executeAddRules(cmd *base.Command, args []string) {
-	var shouldAppend bool
+	var (
+		shouldAppend bool
+	)
 	setSharedFlags(cmd)
 	cmd.Flag.BoolVar(&shouldAppend, "append", false, "")
 	cmd.Flag.Parse(args)
@@ -94,4 +96,5 @@ func executeAddRules(cmd *base.Command, args []string) {
 		}
 		showJSONResponse(resp)
 	}
+
 }

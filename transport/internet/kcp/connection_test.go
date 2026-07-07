@@ -16,14 +16,7 @@ func (NoOpCloser) Close() error {
 }
 
 func TestConnectionReadTimeout(t *testing.T) {
-	conn := NewConnection(ConnMetadata{Conversation: 1}, buf.DiscardBytes, NoOpCloser(0), &Config{
-		Mtu:              1350,
-		Tti:              50,
-		UplinkCapacity:   5,
-		DownlinkCapacity: 20,
-		CwndMultiplier:   20,
-		MaxSendingWindow: 2 * 1024 * 1024,
-	})
+	conn := NewConnection(ConnMetadata{Conversation: 1}, buf.DiscardBytes, NoOpCloser(0), &Config{})
 	conn.SetReadDeadline(time.Now().Add(time.Second))
 
 	b := make([]byte, 1024)
@@ -36,8 +29,8 @@ func TestConnectionReadTimeout(t *testing.T) {
 }
 
 func TestConnectionInterface(t *testing.T) {
-	_ = io.Writer(new(Connection))
-	_ = io.Reader(new(Connection))
-	_ = buf.Reader(new(Connection))
-	_ = buf.Writer(new(Connection))
+	_ = (io.Writer)(new(Connection))
+	_ = (io.Reader)(new(Connection))
+	_ = (buf.Reader)(new(Connection))
+	_ = (buf.Writer)(new(Connection))
 }

@@ -14,11 +14,11 @@ Plainly enabling it in the config probably will result nothing, or lock your rou
 
 ## DETAILS
 
-By default, enabling the feature will only bring the tun interface up. \
-When configured explicitly, Windows and Linux can also apply interface addresses from `gateway` and on-link routes from `autoSystemRoutingTable`.
-Linux does not configure system DNS from the `dns` field; system DNS remains managed by the OS or distribution-specific network services. \
-For more advanced routing policies or rules, OS level configuration can still manage the named interface (e.g. xray0) when it appears.
-This keeps complex system level routing and rules in a single place of responsibility - the OS itself. \
+Current implementation does not contain options to configure network level addresses, routing or rules.
+Enabling the feature will result only tun interface up, and that's it. \
+This is explicit decision, significantly simplifying implementation, and allowing any number of custom configurations, consumers could come up with. Network interface is OS level entity, and OS is what should manage it. \
+Working configuration, is tun enabled in Xray config with specific name (e.g. xray0), and OS level configuration to manage "xray0" interface, applying routing and rules on interface up.
+This way consistency of system level routing and rules is ensured from single place of responsibility - the OS itself. \
 Examples of how to achieve this on a simple Linux system (Ubuntu with systemd-networkd) can be found at the end of this README.
 
 Due to this inbound not actually being a proxy, the configuration ignore required listen and port options, and never listen on any port. \
@@ -41,12 +41,10 @@ Here is simple Xray config snippet to enable the inbound:
 
 - IPv4 and IPv6
 - TCP and UDP
-- ICMP Echo (ping)
 
 ## LIMITATION
 
-- Only ICMP Echo request/reply is supported; other ICMP message types are ignored
-- ICMP Echo replies are generated locally by the TUN stack; they do not validate real remote ICMP reachability
+- No ICMP support
 - Connections are established to any host, as connection success is only a mark of successful accepting packet for proxying. Hosts that are not accepting connections or don't even exists, will look like they opened a connection (SYN-ACK), and never send back a single byte, closing connection (RST) after some time. This is the side effect of the whole process actually being a proxy, and not real network layer 3 vpn
 
 ## CONSIDERATIONS
@@ -174,25 +172,6 @@ route add 1.1.1.1 mask 255.0.0.0 0.0.0.0 if 47
 Note on ipv6 support. \
 Despite Windows also giving the adapter autoconfigured ipv6 address, the ipv6 is not possible until the interface has any _routable_ ipv6 address (given link-local address will not accept traffic from external addresses). \
 So everything applicable for ipv4 above also works for ipv6, you only need to give the interface some address manually, e.g. anything private like fc00::a:b:c:d/64 will do just fine
-
-## FreeBSD SUPPORT
-
-FreeBSD support of the same functionality is implemented through tun(4).
-
-Interface name in the configuration must comply to the scheme "tunN", where N is some number. \
-It's necessary to set an IP address to the interface, ex.:
-```
-ifconfig tun0 inet 169.254.10.1/30
-```
-To attach routing to the interface, route command like following can be executed:
-```
-route add -net 1.1.1.0/24 -iface tun10
-```
-```
-route add -inet6 -host 2606:4700:4700::1111 -iface tun10
-route add -inet6 -host 2606:4700:4700::1001 -iface tun10
-```
-Important to remember that everything written above about Linux routing concept, also apply to FreeBSD. If you simply route default route through tun interface, that will result network loop and immediate network failure.
 
 ## MAC OS X SUPPORT
 

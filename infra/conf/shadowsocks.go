@@ -8,7 +8,6 @@ import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
-	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/proxy/shadowsocks"
 	"github.com/xtls/xray-core/proxy/shadowsocks_2022"
 	"google.golang.org/protobuf/proto"
@@ -45,17 +44,12 @@ type ShadowsocksServerConfig struct {
 	Password    string                   `json:"password"`
 	Level       byte                     `json:"level"`
 	Email       string                   `json:"email"`
-	Users       []*ShadowsocksUserConfig `json:"users"`
-	Clients     []*ShadowsocksUserConfig `json:"clients"`
+	Users       []*ShadowsocksUserConfig `json:"clients"`
 	NetworkList *NetworkList             `json:"network"`
 }
 
 func (v *ShadowsocksServerConfig) Build() (proto.Message, error) {
 	errors.PrintNonRemovalDeprecatedFeatureWarning("Shadowsocks (with no Forward Secrecy, etc.)", "VLESS Encryption")
-
-	if v.Clients != nil {
-		v.Users = v.Clients
-	}
 
 	if C.Contains(shadowaead_2022.List, v.Cipher) {
 		return buildShadowsocks2022(v)
@@ -65,31 +59,23 @@ func (v *ShadowsocksServerConfig) Build() (proto.Message, error) {
 	config.Network = v.NetworkList.Build()
 
 	if v.Users != nil {
-		if len(v.Users) > 0 {
-			config.Users = make([]*protocol.User, len(v.Users))
-			processUser := func(idx int) error {
-				user := v.Users[idx]
-				account := &shadowsocks.Account{
-					Password:   user.Password,
-					CipherType: cipherFromString(user.Cipher),
-				}
-				if account.Password == "" {
-					return errors.New("Shadowsocks password is not specified.")
-				}
-				if account.CipherType < shadowsocks.CipherType_AES_128_GCM ||
-					account.CipherType > shadowsocks.CipherType_XCHACHA20_POLY1305 {
-					return errors.New("unsupported cipher method: ", user.Cipher)
-				}
-				config.Users[idx] = &protocol.User{
-					Email:   user.Email,
-					Level:   uint32(user.Level),
-					Account: serial.ToTypedMessage(account),
-				}
-				return nil
+		for _, user := range v.Users {
+			account := &shadowsocks.Account{
+				Password:   user.Password,
+				CipherType: cipherFromString(user.Cipher),
 			}
-			if err := task.ParallelForN(len(v.Users), processUser); err != nil {
-				return nil, err
+			if account.Password == "" {
+				return nil, errors.New("Shadowsocks password is not specified.")
 			}
+			if account.CipherType < shadowsocks.CipherType_AES_128_GCM ||
+				account.CipherType > shadowsocks.CipherType_XCHACHA20_POLY1305 {
+				return nil, errors.New("unsupported cipher method: ", user.Cipher)
+			}
+			config.Users = append(config.Users, &protocol.User{
+				Email:   user.Email,
+				Level:   uint32(user.Level),
+				Account: serial.ToTypedMessage(account),
+			})
 		}
 	} else {
 		account := &shadowsocks.Account{
@@ -135,24 +121,18 @@ func buildShadowsocks2022(v *ShadowsocksServerConfig) (proto.Message, error) {
 		config.Key = v.Password
 		config.Network = v.NetworkList.Build()
 
-		config.Users = make([]*protocol.User, len(v.Users))
-		processUser := func(idx int) error {
-			user := v.Users[idx]
+		for _, user := range v.Users {
 			if user.Cipher != "" {
-				return errors.New("shadowsocks 2022 (multi-user): users must have empty method")
+				return nil, errors.New("shadowsocks 2022 (multi-user): users must have empty method")
 			}
 			account := &shadowsocks_2022.Account{
 				Key: user.Password,
 			}
-			config.Users[idx] = &protocol.User{
+			config.Users = append(config.Users, &protocol.User{
 				Email:   user.Email,
 				Level:   uint32(user.Level),
 				Account: serial.ToTypedMessage(account),
-			}
-			return nil
-		}
-		if err := task.ParallelForN(len(v.Users), processUser); err != nil {
-			return nil, err
+			})
 		}
 		return config, nil
 	}
@@ -179,22 +159,26 @@ func buildShadowsocks2022(v *ShadowsocksServerConfig) (proto.Message, error) {
 }
 
 type ShadowsocksServerTarget struct {
-	Address  *Address `json:"address"`
-	Port     uint16   `json:"port"`
-	Level    byte     `json:"level"`
-	Email    string   `json:"email"`
-	Cipher   string   `json:"method"`
-	Password string   `json:"password"`
+	Address    *Address `json:"address"`
+	Port       uint16   `json:"port"`
+	Level      byte     `json:"level"`
+	Email      string   `json:"email"`
+	Cipher     string   `json:"method"`
+	Password   string   `json:"password"`
+	UoT        bool     `json:"uot"`
+	UoTVersion int      `json:"uotVersion"`
 }
 
 type ShadowsocksClientConfig struct {
-	Address  *Address                   `json:"address"`
-	Port     uint16                     `json:"port"`
-	Level    byte                       `json:"level"`
-	Email    string                     `json:"email"`
-	Cipher   string                     `json:"method"`
-	Password string                     `json:"password"`
-	Servers  []*ShadowsocksServerTarget `json:"servers"`
+	Address    *Address                   `json:"address"`
+	Port       uint16                     `json:"port"`
+	Level      byte                       `json:"level"`
+	Email      string                     `json:"email"`
+	Cipher     string                     `json:"method"`
+	Password   string                     `json:"password"`
+	UoT        bool                       `json:"uot"`
+	UoTVersion int                        `json:"uotVersion"`
+	Servers    []*ShadowsocksServerTarget `json:"servers"`
 }
 
 func (v *ShadowsocksClientConfig) Build() (proto.Message, error) {
@@ -203,12 +187,14 @@ func (v *ShadowsocksClientConfig) Build() (proto.Message, error) {
 	if v.Address != nil {
 		v.Servers = []*ShadowsocksServerTarget{
 			{
-				Address:  v.Address,
-				Port:     v.Port,
-				Level:    v.Level,
-				Email:    v.Email,
-				Cipher:   v.Cipher,
-				Password: v.Password,
+				Address:    v.Address,
+				Port:       v.Port,
+				Level:      v.Level,
+				Email:      v.Email,
+				Cipher:     v.Cipher,
+				Password:   v.Password,
+				UoT:        v.UoT,
+				UoTVersion: v.UoTVersion,
 			},
 		}
 	}
@@ -234,6 +220,8 @@ func (v *ShadowsocksClientConfig) Build() (proto.Message, error) {
 			config.Port = uint32(server.Port)
 			config.Method = server.Cipher
 			config.Key = server.Password
+			config.UdpOverTcp = server.UoT
+			config.UdpOverTcpVersion = uint32(server.UoTVersion)
 			return config, nil
 		}
 	}

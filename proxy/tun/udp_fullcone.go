@@ -1,24 +1,16 @@
 package tun
 
 import (
-	"context"
 	"io"
 	"sync"
-	"time"
 
 	"github.com/xtls/xray-core/common/buf"
-	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 )
 
-type packet struct {
-	data []byte
-	dest *net.Destination
-}
-
 // sub-handler specifically for udp connections under main handler
 type udpConnectionHandler struct {
-	sync.RWMutex
+	sync.Mutex
 
 	udpConns map[net.Destination]*udpConn
 
@@ -38,44 +30,25 @@ func newUdpConnectionHandler(handleConnection func(conn net.Conn, dest net.Desti
 
 // HandlePacket handles UDP packets coming from tun, to forward to the dispatcher
 // this custom handler support FullCone NAT of returning packets, binding connection only by the source addr:port
-func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destination, data []byte) {
-	u.RLock()
-	conn, found := u.udpConns[src]
-	if found {
-		select {
-		case conn.egress <- &packet{
-			data: data,
-			dest: &dst,
-		}:
-		default:
-			errors.LogDebug(context.Background(), "drop udp with size ", len(data), " to ", dst.NetAddr(), " original ", conn.dst.NetAddr(), " > queue full")
-		}
-		u.RUnlock()
-		return
-	}
-	u.RUnlock()
-
+func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destination, data []byte) bool {
 	u.Lock()
-	defer u.Unlock()
-
-	conn, found = u.udpConns[src]
+	conn, found := u.udpConns[src]
 	if !found {
-		egress := make(chan *packet, 1024)
+		egress := make(chan []byte, 16)
 		conn = &udpConn{handler: u, egress: egress, src: src, dst: dst}
 		u.udpConns[src] = conn
 
 		go u.handleConnection(conn, dst)
 	}
+	u.Unlock()
 
 	// send packet data to the egress channel, if it has buffer, or discard
 	select {
-	case conn.egress <- &packet{
-		data: data,
-		dest: &dst,
-	}:
+	case conn.egress <- data:
 	default:
-		errors.LogDebug(context.Background(), "drop udp with size ", len(data), " to ", dst.NetAddr(), " original ", conn.dst.NetAddr(), " > queue full 2")
 	}
+
+	return true
 }
 
 func (u *udpConnectionHandler) connectionFinished(src net.Destination) {
@@ -90,63 +63,25 @@ func (u *udpConnectionHandler) connectionFinished(src net.Destination) {
 
 // udp connection abstraction
 type udpConn struct {
+	net.Conn
+	buf.Writer
+
 	handler *udpConnectionHandler
 
-	egress chan *packet
+	egress chan []byte
 	src    net.Destination
 	dst    net.Destination
 }
 
-func (c *udpConn) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	for {
-		e, ok := <-c.egress
-		if !ok {
-			return nil, io.EOF
-		}
-
-		b := buf.New()
-		if _, err := b.Write(e.data); err != nil {
-			errors.LogErrorInner(context.Background(), err, "drop packet to ", e.dest, " with size ", len(e.data))
-			b.Release()
-			continue
-		}
-		b.UDP = e.dest
-
-		return buf.MultiBuffer{b}, nil
-	}
-}
-
 // Read packets from the connection
 func (c *udpConn) Read(p []byte) (int, error) {
-	e, ok := <-c.egress
+	data, ok := <-c.egress
 	if !ok {
 		return 0, io.EOF
 	}
-	n := copy(p, e.data)
-	if n != len(e.data) {
-		return 0, io.ErrShortBuffer
-	}
-	return n, nil
-}
 
-func (c *udpConn) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	for i, b := range mb {
-		dst := c.dst
-		if b.UDP != nil {
-			if b.UDP.Address.Family().IsDomain() {
-				errors.LogError(context.Background(), "impossible domain packet ", b.UDP, " reply via original target ", dst)
-			} else {
-				dst = *b.UDP
-			}
-		}
-		err := c.handler.writePacket(b.Bytes(), dst, c.src)
-		if err != nil {
-			buf.ReleaseMulti(mb[i:])
-			return err
-		}
-		b.Release()
-	}
-	return nil
+	n := copy(p, data)
+	return n, nil
 }
 
 // Write returning packets back
@@ -167,21 +102,33 @@ func (c *udpConn) Close() error {
 }
 
 func (c *udpConn) LocalAddr() net.Addr {
-	return c.dst.RawNetAddr()
+	return &net.UDPAddr{IP: c.dst.Address.IP(), Port: int(c.dst.Port.Value())}
 }
 
 func (c *udpConn) RemoteAddr() net.Addr {
-	return c.src.RawNetAddr()
+	return &net.UDPAddr{IP: c.src.Address.IP(), Port: int(c.src.Port.Value())}
 }
 
-func (c *udpConn) SetDeadline(t time.Time) error {
-	return nil
-}
+// Write returning packets back
+func (c *udpConn) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	for _, b := range mb {
+		dst := c.dst
+		if b.UDP != nil {
+			dst = *b.UDP
+		}
 
-func (c *udpConn) SetReadDeadline(t time.Time) error {
-	return nil
-}
+		// validate address family matches between buffer packet and the connection
+		if dst.Address.Family() != c.dst.Address.Family() {
+			continue
+		}
 
-func (c *udpConn) SetWriteDeadline(t time.Time) error {
+		// sending packets back mean sending payload with source/destination reversed
+		err := c.handler.writePacket(b.Bytes(), dst, c.src)
+		if err != nil {
+			// udp doesn't guarantee delivery, so in any failure we just continue to the next packet
+			continue
+		}
+	}
+
 	return nil
 }

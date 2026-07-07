@@ -288,22 +288,20 @@ func (w *SendingWorker) Write(seg Segment) error {
 }
 
 func (w *SendingWorker) OnPacketLoss(lossRate uint32) {
-	if w.conn.roundTrip.Timeout() == 0 {
+	if !w.conn.Config.Congestion || w.conn.roundTrip.Timeout() == 0 {
 		return
 	}
 
 	if lossRate >= 15 {
 		w.controlWindow = 3 * w.controlWindow / 4
-	}
-	if lossRate <= 5 {
+	} else if lossRate <= 5 {
 		w.controlWindow += w.controlWindow / 4
 	}
 	if w.controlWindow < 16 {
 		w.controlWindow = 16
 	}
-	cwnd := w.conn.Config.GetSendingInFlightSize()
-	if w.controlWindow > cwnd {
-		w.controlWindow = cwnd
+	if w.controlWindow > 2*w.conn.Config.GetSendingInFlightSize() {
+		w.controlWindow = 2 * w.conn.Config.GetSendingInFlightSize()
 	}
 }
 
@@ -319,11 +317,11 @@ func (w *SendingWorker) Flush(current uint32) {
 	if cwnd > w.remoteNextNumber-w.firstUnacknowledged {
 		cwnd = w.remoteNextNumber - w.firstUnacknowledged
 	}
-	if cwnd > w.controlWindow {
+	if w.conn.Config.Congestion && cwnd > w.controlWindow {
 		cwnd = w.controlWindow
 	}
 
-	cwnd *= w.conn.Config.CwndMultiplier
+	cwnd *= 20 // magic
 
 	if !w.window.IsEmpty() {
 		w.window.Flush(current, w.conn.roundTrip.Timeout(), cwnd)

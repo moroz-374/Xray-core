@@ -14,7 +14,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
-	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -35,18 +34,23 @@ const (
 // stackGVisor is ip stack implemented by gVisor package
 type stackGVisor struct {
 	ctx         context.Context
-	tun         Tun
+	tun         GVisorTun
 	idleTimeout time.Duration
 	handler     *Handler
 	stack       *stack.Stack
 	endpoint    stack.LinkEndpoint
 }
 
+// GVisorTun implements a bridge to connect gVisor ip stack to tun interface
+type GVisorTun interface {
+	newEndpoint() (stack.LinkEndpoint, error)
+}
+
 // NewStack builds new ip stack (using gVisor)
 func NewStack(ctx context.Context, options StackOptions, handler *Handler) (Stack, error) {
 	gStack := &stackGVisor{
 		ctx:         ctx,
-		tun:         options.Tun,
+		tun:         options.Tun.(GVisorTun),
 		idleTimeout: options.IdleTimeout,
 		handler:     handler,
 	}
@@ -69,7 +73,7 @@ func (t *stackGVisor) Start() error {
 	tcpForwarder := tcp.NewForwarder(ipStack, 0, 65535, func(r *tcp.ForwarderRequest) {
 		go func(r *tcp.ForwarderRequest) {
 			var wq waiter.Queue
-			id := r.ID()
+			var id = r.ID()
 
 			// Perform a TCP three-way handshake.
 			ep, err := r.CreateEndpoint(&wq)
@@ -101,25 +105,18 @@ func (t *stackGVisor) Start() error {
 	// Use custom UDP packet handler, instead of strict gVisor forwarder, for FullCone NAT support
 	udpForwarder := newUdpConnectionHandler(t.handler.HandleConnection, t.writeRawUDPPacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
-		data := pkt.Clone().Data().AsRange().ToSlice()
-		// if len(data) == 0 {
-		// 	return false
-		// }
+		data := pkt.Data().AsRange().ToSlice()
+		if len(data) == 0 {
+			return false
+		}
 		// source/destination of the packet we process as incoming, on gVisor side are Remote/Local
 		// in other terms, src is the side behind tun, dst is the side behind gVisor
 		// this function handle packets passing from the tun to the gVisor, therefore the src/dst assignement
-		srcIP := net.IPAddress(id.RemoteAddress.AsSlice())
-		dstIP := net.IPAddress(id.LocalAddress.AsSlice())
-		if srcIP == nil || dstIP == nil {
-			panic(id)
-		}
-		src := net.UDPDestination(srcIP, net.Port(id.RemotePort))
-		dst := net.UDPDestination(dstIP, net.Port(id.LocalPort))
-		udpForwarder.HandlePacket(src, dst, data)
-		return true
+		src := net.UDPDestination(net.IPAddress(id.RemoteAddress.AsSlice()), net.Port(id.RemotePort))
+		dst := net.UDPDestination(net.IPAddress(id.LocalAddress.AsSlice()), net.Port(id.LocalPort))
+
+		return udpForwarder.HandlePacket(src, dst, data)
 	})
-	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber4, t.handleICMPv4Packet)
-	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber6, t.handleICMPv6Packet)
 
 	t.stack = ipStack
 	t.endpoint = linkEndpoint
@@ -208,7 +205,7 @@ func (t *stackGVisor) Close() error {
 func createStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
-		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
+		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 		HandleLocal:        false,
 	}
 	gStack := stack.New(opts)

@@ -7,7 +7,6 @@ import (
 
 	c "github.com/xtls/xray-core/common/ctx"
 	"github.com/xtls/xray-core/common/errors"
-	"github.com/xtls/xray-core/common/geodata"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/signal"
@@ -79,12 +78,12 @@ type Outbound struct {
 
 // SniffingRequest controls the behavior of content sniffing. They are from inbound config. Read-only
 type SniffingRequest struct {
-	ExcludeForDomain               geodata.DomainMatcher
-	ExcludeForIP                   geodata.IPMatcher
+	ExcludeForDomain               []string
 	OverrideDestinationForProtocol []string
 	Enabled                        bool
 	MetadataOnly                   bool
 	RouteOnly                      bool
+	LogSniffedDestination          bool
 }
 
 // Content is the metadata of the connection content. Mainly used for routing.

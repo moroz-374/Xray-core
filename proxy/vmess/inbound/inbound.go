@@ -138,8 +138,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 func (h *Handler) Close() error {
 	return errors.Combine(
 		h.sessionHistory.Close(),
-		common.Close(h.usersByEmail),
-	)
+		common.Close(h.usersByEmail))
 }
 
 // Network implements proxy.Inbound.Network().

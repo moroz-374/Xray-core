@@ -12,7 +12,6 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
-	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/proxy/trojan"
 	"google.golang.org/protobuf/proto"
 )
@@ -112,7 +111,6 @@ type TrojanUserConfig struct {
 
 // TrojanServerConfig is Inbound configuration
 type TrojanServerConfig struct {
-	Users     []*TrojanUserConfig      `json:"users"`
 	Clients   []*TrojanUserConfig      `json:"clients"`
 	Fallbacks []*TrojanInboundFallback `json:"fallbacks"`
 }
@@ -121,18 +119,13 @@ type TrojanServerConfig struct {
 func (c *TrojanServerConfig) Build() (proto.Message, error) {
 	errors.PrintNonRemovalDeprecatedFeatureWarning("Trojan (with no Flow, etc.)", "VLESS with Flow & Seed")
 
-	if c.Clients != nil {
-		c.Users = c.Clients
-	}
-
 	config := &trojan.ServerConfig{
-		Users: make([]*protocol.User, len(c.Users)),
+		Users: make([]*protocol.User, len(c.Clients)),
 	}
 
-	processClient := func(idx int) error {
-		rawUser := c.Users[idx]
+	for idx, rawUser := range c.Clients {
 		if rawUser.Flow != "" {
-			return errors.PrintRemovedFeatureError(`Flow for Trojan`, ``)
+			return nil, errors.PrintRemovedFeatureError(`Flow for Trojan`, ``)
 		}
 
 		config.Users[idx] = &protocol.User{
@@ -142,10 +135,6 @@ func (c *TrojanServerConfig) Build() (proto.Message, error) {
 				Password: rawUser.Password,
 			}),
 		}
-		return nil
-	}
-	if err := task.ParallelForN(len(c.Users), processClient); err != nil {
-		return nil, err
 	}
 
 	for _, fb := range c.Fallbacks {

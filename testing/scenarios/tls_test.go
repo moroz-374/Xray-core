@@ -68,9 +68,7 @@ func TestSimpleTLSConnection(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -84,9 +82,9 @@ func TestSimpleTLSConnection(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -181,9 +179,7 @@ func TestAutoIssuingCertificate(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -197,9 +193,9 @@ func TestAutoIssuingCertificate(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -286,9 +282,7 @@ func TestTLSOverKCP(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -302,9 +296,9 @@ func TestTLSOverKCP(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -386,9 +380,7 @@ func TestTLSOverWebSocket(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -402,9 +394,9 @@ func TestTLSOverWebSocket(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -502,9 +494,7 @@ func TestGRPC(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -518,9 +508,9 @@ func TestGRPC(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -618,9 +608,7 @@ func TestGRPCMultiMode(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -634,9 +622,9 @@ func TestGRPCMultiMode(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -727,9 +715,7 @@ func TestSimpleTLSConnectionPinned(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -743,9 +729,9 @@ func TestSimpleTLSConnectionPinned(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -826,9 +812,7 @@ func TestSimpleTLSConnectionPinnedWrongCert(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -842,9 +826,9 @@ func TestSimpleTLSConnectionPinnedWrongCert(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -924,9 +908,7 @@ func TestUTLSConnectionPinned(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -940,9 +922,9 @@ func TestUTLSConnectionPinned(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -1024,9 +1006,7 @@ func TestUTLSConnectionPinnedWrongCert(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -1040,9 +1020,9 @@ func TestUTLSConnectionPinnedWrongCert(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},

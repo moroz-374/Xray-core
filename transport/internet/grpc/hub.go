@@ -19,25 +19,24 @@ import (
 
 type Listener struct {
 	encoding.UnimplementedGRPCServiceServer
-	ctx                  context.Context
-	handler              internet.ConnHandler
-	local                net.Addr
-	config               *Config
-	trustedXForwardedFor []string
+	ctx     context.Context
+	handler internet.ConnHandler
+	local   net.Addr
+	config  *Config
 
 	s *grpc.Server
 }
 
 func (l Listener) Tun(server encoding.GRPCService_TunServer) error {
 	tunCtx, cancel := context.WithCancel(l.ctx)
-	l.handler(encoding.NewHunkConn(server, cancel, l.trustedXForwardedFor))
+	l.handler(encoding.NewHunkConn(server, cancel))
 	<-tunCtx.Done()
 	return nil
 }
 
 func (l Listener) TunMulti(server encoding.GRPCService_TunMultiServer) error {
 	tunCtx, cancel := context.WithCancel(l.ctx)
-	l.handler(encoding.NewMultiHunkConn(server, cancel, l.trustedXForwardedFor))
+	l.handler(encoding.NewMultiHunkConn(server, cancel))
 	<-tunCtx.Done()
 	return nil
 }
@@ -75,9 +74,6 @@ func Listen(ctx context.Context, address net.Address, port net.Port, settings *i
 	}
 
 	listener.ctx = ctx
-	if settings.SocketSettings != nil {
-		listener.trustedXForwardedFor = settings.SocketSettings.TrustedXForwardedFor
-	}
 
 	config := tls.ConfigFromStreamSettings(settings)
 

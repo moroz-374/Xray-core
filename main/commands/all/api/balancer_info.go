@@ -59,6 +59,7 @@ func executeBalancerInfo(cmd *base.Command, args []string) {
 	}
 
 	showBalancerInfo(resp.Balancer)
+
 }
 
 func showBalancerInfo(b *routerService.BalancerMsg) {

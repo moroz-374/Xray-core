@@ -1,17 +1,14 @@
 package socks
 
 import (
-	"context"
 	"encoding/binary"
 	"io"
-	gonet "net"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
-	"github.com/xtls/xray-core/transport/internet"
 )
 
 const (
@@ -140,13 +137,13 @@ func (s *ServerSession) auth5(nMethod byte, reader io.Reader, writer io.Writer) 
 	return "", nil
 }
 
-func (s *ServerSession) handshake5(nMethod byte, reader io.Reader, writer net.Conn) (*protocol.RequestHeader, *TempUDPConn, error) {
+func (s *ServerSession) handshake5(nMethod byte, reader io.Reader, writer io.Writer) (*protocol.RequestHeader, error) {
 	var (
 		username string
 		err      error
 	)
 	if username, err = s.auth5(nMethod, reader, writer); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	var cmd byte
@@ -154,7 +151,7 @@ func (s *ServerSession) handshake5(nMethod byte, reader io.Reader, writer net.Co
 		buffer := buf.StackNew()
 		if _, err := buffer.ReadFullFrom(reader, 3); err != nil {
 			buffer.Release()
-			return nil, nil, errors.New("failed to read request").Base(err)
+			return nil, errors.New("failed to read request").Base(err)
 		}
 		cmd = buffer.Byte(1)
 		buffer.Release()
@@ -171,29 +168,28 @@ func (s *ServerSession) handshake5(nMethod byte, reader io.Reader, writer net.Co
 	case cmdUDPAssociate:
 		if !s.config.UdpEnabled {
 			writeSocks5Response(writer, statusCmdNotSupport, net.AnyIP, net.Port(0))
-			return nil, nil, errors.New("UDP is not enabled.")
+			return nil, errors.New("UDP is not enabled.")
 		}
 		request.Command = protocol.RequestCommandUDP
 	case cmdTCPBind:
 		writeSocks5Response(writer, statusCmdNotSupport, net.AnyIP, net.Port(0))
-		return nil, nil, errors.New("TCP bind is not supported.")
+		return nil, errors.New("TCP bind is not supported.")
 	default:
 		writeSocks5Response(writer, statusCmdNotSupport, net.AnyIP, net.Port(0))
-		return nil, nil, errors.New("unknown command ", cmd)
+		return nil, errors.New("unknown command ", cmd)
 	}
 
 	request.Version = socks5Version
 
 	addr, port, err := addrParser.ReadAddressPort(nil, reader)
 	if err != nil {
-		return nil, nil, errors.New("failed to read address").Base(err)
+		return nil, errors.New("failed to read address").Base(err)
 	}
 	request.Address = addr
 	request.Port = port
 
 	responseAddress := s.address
 	responsePort := s.port
-	var tempUDPConn *TempUDPConn
 	//nolint:gocritic // Use if else chain for clarity
 	if request.Command == protocol.RequestCommandUDP {
 		if s.config.Address != nil {
@@ -203,35 +199,20 @@ func (s *ServerSession) handshake5(nMethod byte, reader io.Reader, writer net.Co
 			// Use conn.LocalAddr() IP as remote address in the response by default
 			responseAddress = s.localAddress
 		}
-		udpHub, err := internet.ListenSystemPacket(context.Background(), &net.UDPAddr{IP: responseAddress.IP(), Port: 0}, nil)
-		if err != nil {
-			return nil, nil, errors.New("failed to create UDP listener").Base(err)
-		}
-		responsePort = net.Port(udpHub.LocalAddr().(*net.UDPAddr).Port)
-		expectedRemote := &gonet.UDPAddr{}
-		// UDP Associate should not specify a domain as source IP
-		if request.Address.Family().IsDomain() || request.Address.IP().IsUnspecified() {
-			expectedRemote.IP = writer.RemoteAddr().(*net.TCPAddr).IP // unix?
-		} else {
-			expectedRemote.IP = request.Address.IP()
-			expectedRemote.Port = int(request.Port) // 0 is allowed
-		}
-		tempUDPConn = NewTempUDPConn(udpHub, writer, expectedRemote)
 	}
 	if err := writeSocks5Response(writer, statusSuccess, responseAddress, responsePort); err != nil {
-		common.CloseIfExists(tempUDPConn)
-		return nil, nil, err
+		return nil, err
 	}
 
-	return request, tempUDPConn, nil
+	return request, nil
 }
 
 // Handshake performs a Socks4/4a/5 handshake.
-func (s *ServerSession) Handshake(reader io.Reader, writer net.Conn) (*protocol.RequestHeader, *TempUDPConn, error) {
+func (s *ServerSession) Handshake(reader io.Reader, writer io.Writer) (*protocol.RequestHeader, error) {
 	buffer := buf.StackNew()
 	if _, err := buffer.ReadFullFrom(reader, 2); err != nil {
 		buffer.Release()
-		return nil, nil, errors.New("insufficient header").Base(err)
+		return nil, errors.New("insufficient header").Base(err)
 	}
 
 	version := buffer.Byte(0)
@@ -240,12 +221,11 @@ func (s *ServerSession) Handshake(reader io.Reader, writer net.Conn) (*protocol.
 
 	switch version {
 	case socks4Version:
-		header, err := s.handshake4(cmd, reader, writer)
-		return header, nil, err
+		return s.handshake4(cmd, reader, writer)
 	case socks5Version:
 		return s.handshake5(cmd, reader, writer)
 	default:
-		return nil, nil, errors.New("unknown Socks version: ", version)
+		return nil, errors.New("unknown Socks version: ", version)
 	}
 }
 

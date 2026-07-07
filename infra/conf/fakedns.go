@@ -118,17 +118,26 @@ func (FakeDNSPostProcessingStage) Process(config *Config) error {
 			}
 		}
 
-		// Check if there is a Inbound with necessary sniffer on
-		for _, v := range config.InboundConfigs {
-			if v.SniffingConfig != nil && v.SniffingConfig.Enabled {
-				for _, d := range v.SniffingConfig.DestOverride {
-					if strings.EqualFold(d, "fakedns") || strings.EqualFold(d, "fakedns+others") {
-						return nil
+		found := false
+		// Check if there is a Outbound with necessary sniffer on
+		var inbounds []InboundDetourConfig
+
+		if len(config.InboundConfigs) > 0 {
+			inbounds = append(inbounds, config.InboundConfigs...)
+		}
+		for _, v := range inbounds {
+			if v.SniffingConfig != nil && v.SniffingConfig.Enabled && v.SniffingConfig.DestOverride != nil {
+				for _, dov := range *v.SniffingConfig.DestOverride {
+					if strings.EqualFold(dov, "fakedns") || strings.EqualFold(dov, "fakedns+others") {
+						found = true
+						break
 					}
 				}
 			}
 		}
-		errors.LogWarning(context.Background(), "Defined FakeDNS but haven't enabled FakeDNS destOverride at any inbound.")
+		if !found {
+			errors.LogWarning(context.Background(), "Defined FakeDNS but haven't enabled FakeDNS destOverride at any inbound.")
+		}
 	}
 
 	return nil

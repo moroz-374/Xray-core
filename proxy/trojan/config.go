@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-
 	"google.golang.org/protobuf/proto"
 
 	"github.com/xtls/xray-core/common"

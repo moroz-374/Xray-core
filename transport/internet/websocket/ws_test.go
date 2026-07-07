@@ -79,9 +79,6 @@ func TestDialWithRemoteAddr(t *testing.T) {
 		ProtocolSettings: &Config{
 			Path: "ws",
 		},
-		SocketSettings: &internet.SocketConfig{
-			TrustedXForwardedFor: []string{"X-Forwarded-For"},
-		},
 	}, func(conn stat.Connection) {
 		go func(c stat.Connection) {
 			defer c.Close()

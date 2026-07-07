@@ -3,13 +3,9 @@ package conf
 import (
 	"encoding/base64"
 	"encoding/hex"
-	"strconv"
 	"strings"
 
 	"github.com/xtls/xray-core/common/errors"
-	"github.com/xtls/xray-core/common/protocol"
-	"github.com/xtls/xray-core/common/serial"
-	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/proxy/wireguard"
 	"google.golang.org/protobuf/proto"
 )
@@ -20,12 +16,9 @@ type WireGuardPeerConfig struct {
 	Endpoint     string   `json:"endpoint"`
 	KeepAlive    uint32   `json:"keepAlive"`
 	AllowedIPs   []string `json:"allowedIPs,omitempty"`
-
-	Level uint32 `json:"level"`
-	Email string `json:"email"`
 }
 
-func (c *WireGuardPeerConfig) Build() (*wireguard.PeerConfig, error) {
+func (c *WireGuardPeerConfig) Build() (proto.Message, error) {
 	var err error
 	config := new(wireguard.PeerConfig)
 
@@ -44,9 +37,8 @@ func (c *WireGuardPeerConfig) Build() (*wireguard.PeerConfig, error) {
 	}
 
 	config.Endpoint = c.Endpoint
-	if c.KeepAlive != 0 {
-		config.KeepAlive = strconv.FormatUint(uint64(c.KeepAlive), 10)
-	}
+	// default 0
+	config.KeepAlive = c.KeepAlive
 	if c.AllowedIPs == nil {
 		config.AllowedIps = []string{"0.0.0.0/0", "::0/0"}
 	} else {
@@ -64,6 +56,7 @@ type WireGuardConfig struct {
 	Address        []string               `json:"address"`
 	Peers          []*WireGuardPeerConfig `json:"peers"`
 	MTU            int32                  `json:"mtu"`
+	NumWorkers     int32                  `json:"workers"`
 	Reserved       []byte                 `json:"reserved"`
 	DomainStrategy string                 `json:"domainStrategy"`
 }
@@ -84,32 +77,14 @@ func (c *WireGuardConfig) Build() (proto.Message, error) {
 		config.Endpoint = c.Address
 	}
 
-	if c.IsClient {
+	if c.Peers != nil {
 		config.Peers = make([]*wireguard.PeerConfig, len(c.Peers))
 		for i, p := range c.Peers {
 			msg, err := p.Build()
 			if err != nil {
 				return nil, err
 			}
-			config.Peers[i] = msg
-		}
-	} else {
-		config.Users = make([]*protocol.User, len(c.Peers))
-		processUser := func(idx int) error {
-			p := c.Peers[idx]
-			m, err := p.Build()
-			if err != nil {
-				return err
-			}
-			config.Users[idx] = &protocol.User{
-				Email:   p.Email,
-				Level:   p.Level,
-				Account: serial.ToTypedMessage(m),
-			}
-			return nil
-		}
-		if err := task.ParallelForN(len(c.Peers), processUser); err != nil {
-			return nil, err
+			config.Peers[i] = msg.(*wireguard.PeerConfig)
 		}
 	}
 
@@ -118,6 +93,9 @@ func (c *WireGuardConfig) Build() (proto.Message, error) {
 	} else {
 		config.Mtu = c.MTU
 	}
+	// these a fallback code exists in wireguard-go code,
+	// we don't need to process fallback manually
+	config.NumWorkers = c.NumWorkers
 
 	if len(c.Reserved) != 0 && len(c.Reserved) != 3 {
 		return nil, errors.New(`"reserved" should be empty or 3 bytes`)

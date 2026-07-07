@@ -1,207 +1,172 @@
 package xicmp
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/binary"
-	goerrors "errors"
-	"fmt"
 	"io"
-	mathrand "math/rand"
 	"net"
-	"net/netip"
+	"strings"
 	"sync"
 	"time"
-	_ "unsafe"
 
-	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/crypto"
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
+	"github.com/xtls/xray-core/transport/internet/hysteria/udphop"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
 
-var pool = sync.Pool{
-	New: func() any {
-		return make([]byte, finalmask.UDPSize)
-	},
-}
+const (
+	initPollDelay       = 500 * time.Millisecond
+	maxPollDelay        = 10 * time.Second
+	pollDelayMultiplier = 2.0
+	pollLimit           = 16
+	windowSize          = 1000
+)
 
 type packet struct {
 	p    []byte
 	addr net.Addr
-	err  error
+}
+
+type seqStatus struct {
+	needSeqByte bool
+	seqByte     byte
 }
 
 type xicmpConnClient struct {
 	conn     net.PacketConn
-	icmp4    *icmp.PacketConn
-	icmp6    *icmp.PacketConn
-	udp      bool
-	ips      []netip.Addr
-	clientID [8]byte
-	id       int
-	seq      int
-	readCh   chan packet
-	closedCh chan struct{}
-	mu       sync.Mutex
+	icmpConn *icmp.PacketConn
+
+	typ       icmp.Type
+	id        int
+	seq       int
+	proto     int
+	seqStatus map[int]*seqStatus
+
+	pollChan   chan struct{}
+	readQueue  chan *packet
+	writeQueue chan *packet
+
+	closed bool
+	mutex  sync.Mutex
 }
 
-func NewConnClient(c *Config, raw net.PacketConn) (net.PacketConn, error) {
-	var icmp4, icmp6 *icmp.PacketConn
-	var err4, err6 error
-	if c.DGRAM {
-		icmp4, err4 = icmp.ListenPacket("udp4", "0.0.0.0")
-		icmp6, err6 = icmp.ListenPacket("udp6", "::")
-	} else {
-		icmp4, err4 = icmp.ListenPacket("ip4:icmp", "0.0.0.0")
-		icmp6, err6 = icmp.ListenPacket("ip6:ipv6-icmp", "::")
-	}
-	if err4 != nil || err6 != nil {
-		return nil, errors.Combine(err4, err6)
+func NewConnClient(c *Config, raw net.PacketConn, level int) (net.PacketConn, error) {
+	_, ok1 := raw.(*internet.FakePacketConn)
+	_, ok2 := raw.(*udphop.UdpHopPacketConn)
+	if level != 0 || ok1 || ok2 {
+		return nil, errors.New("xicmp requires being at the outermost level")
 	}
 
-	ips := make([]netip.Addr, 0, len(c.IPs))
-	for _, ip := range c.IPs {
-		ips = append(ips, netip.MustParseAddr(ip))
+	network := "ip4:icmp"
+	typ := icmp.Type(ipv4.ICMPTypeEcho)
+	proto := 1
+	if strings.Contains(c.Ip, ":") {
+		network = "ip6:ipv6-icmp"
+		typ = ipv6.ICMPTypeEchoRequest
+		proto = 58
 	}
 
-	var clientID [8]byte
-	common.Must2(rand.Read(clientID[:]))
+	icmpConn, err := icmp.ListenPacket(network, c.Ip)
+	if err != nil {
+		return nil, errors.New("xicmp listen err").Base(err)
+	}
+
+	if c.Id == 0 {
+		c.Id = int32(crypto.RandBetween(0, 65535))
+	}
 
 	conn := &xicmpConnClient{
 		conn:     raw,
-		icmp4:    icmp4,
-		icmp6:    icmp6,
-		udp:      c.DGRAM,
-		ips:      ips,
-		clientID: clientID,
-		id:       mathrand.Intn(65536),
-		seq:      1,
-		readCh:   make(chan packet),
-		closedCh: make(chan struct{}),
+		icmpConn: icmpConn,
+
+		typ:       typ,
+		id:        int(c.Id),
+		seq:       1,
+		proto:     proto,
+		seqStatus: make(map[int]*seqStatus),
+
+		pollChan:   make(chan struct{}, pollLimit),
+		readQueue:  make(chan *packet, 256),
+		writeQueue: make(chan *packet, 256),
 	}
 
-	go conn.recv4()
-	go conn.recv6()
+	go conn.recvLoop()
+	go conn.sendLoop()
 
 	return conn, nil
 }
 
-func (c *xicmpConnClient) ring(a, b uint16) uint16 {
-	return min(a-b, b-a)
-}
+func (c *xicmpConnClient) encode(p []byte) ([]byte, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-func (c *xicmpConnClient) closed() bool {
-	select {
-	case <-c.closedCh:
-		return true
-	default:
-		return false
+	needSeqByte := false
+	var seqByte byte
+	data := p
+	if len(p) > 0 {
+		needSeqByte = true
+		seqByte = p[0]
 	}
+
+	msg := icmp.Message{
+		Type: c.typ,
+		Code: 0,
+		Body: &icmp.Echo{
+			ID:   c.id,
+			Seq:  c.seq,
+			Data: data,
+		},
+	}
+
+	buf, err := msg.Marshal(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(buf) > finalmask.UDPSize {
+		return nil, errors.New("xicmp len(buf) > finalmask.UDPSize")
+	}
+
+	c.seqStatus[c.seq] = &seqStatus{
+		needSeqByte: needSeqByte,
+		seqByte:     seqByte,
+	}
+
+	delete(c.seqStatus, int(uint16(c.seq-windowSize)))
+
+	c.seq++
+
+	if c.seq == 65536 {
+		delete(c.seqStatus, int(uint16(c.seq-windowSize)))
+		c.seq = 1
+	}
+
+	return buf, nil
 }
 
-func (c *xicmpConnClient) recv4() {
-	var b [finalmask.UDPSize]byte
+func (c *xicmpConnClient) recvLoop() {
+	var buf [finalmask.UDPSize]byte
 
 	for {
-		if c.closed() {
-			return
-		}
-
-		n, addr, err := c.icmp4.ReadFrom(b[:])
-		if err != nil {
-			var netErr net.Error
-			if goerrors.As(err, &netErr) && netErr.Timeout() {
-				select {
-				case c.readCh <- packet{
-					err: err,
-				}:
-				case <-c.closedCh:
-					return
-				}
-			}
-			continue
-		}
-
-		msg, err := icmp.ParseMessage(1, b[:n])
-		if err != nil {
-			continue
-		}
-
-		if msg.Type != ipv4.ICMPTypeEchoReply {
-			continue
-		}
-
-		echo, ok := msg.Body.(*icmp.Echo)
-		if !ok {
-			continue
-		}
-
-		// errors.LogDebug(context.Background(), "id ", echo.ID, " seq ", echo.Seq, " addr ", addr)
-
-		if !c.udp && echo.ID != c.id {
-			continue
-		}
-
-		if c.ring(uint16(echo.Seq), uint16(c.seq)) > 1000 {
-			continue
-		}
-
-		if len(echo.Data) > 8 && bytes.Equal(echo.Data[:8], c.clientID[:]) {
-			continue
-		}
-
-		p := pool.Get().([]byte)[:len(echo.Data)]
-		copy(p, echo.Data)
-
-		if !c.udp {
-			addr = &net.UDPAddr{IP: addr.(*net.IPAddr).IP}
-		}
-
-		select {
-		case c.readCh <- packet{
-			p:    p,
-			addr: addr,
-		}:
-		case <-c.closedCh:
-			pool.Put(p)
-			return
-		}
-	}
-}
-
-func (c *xicmpConnClient) recv6() {
-	var b [finalmask.UDPSize]byte
-
-	for {
-		if c.closed() {
+		if c.closed {
 			break
 		}
 
-		n, addr, err := c.icmp6.ReadFrom(b[:])
-		if err != nil {
-			var netErr net.Error
-			if goerrors.As(err, &netErr) && netErr.Timeout() {
-				select {
-				case c.readCh <- packet{
-					err: err,
-				}:
-				case <-c.closedCh:
-					return
-				}
-			}
-			continue
-		}
-
-		msg, err := icmp.ParseMessage(58, b[:n])
+		n, addr, err := c.icmpConn.ReadFrom(buf[:])
 		if err != nil {
 			continue
 		}
 
-		if msg.Type != ipv6.ICMPTypeEchoReply {
+		msg, err := icmp.ParseMessage(c.proto, buf[:n])
+		if err != nil {
+			continue
+		}
+
+		if msg.Type != ipv4.ICMPTypeEchoReply && msg.Type != ipv6.ICMPTypeEchoReply {
 			continue
 		}
 
@@ -210,153 +175,180 @@ func (c *xicmpConnClient) recv6() {
 			continue
 		}
 
-		// errors.LogDebug(context.Background(), "id ", echo.ID, " seq ", echo.Seq, " addr ", addr)
+		c.mutex.Lock()
+		seqStatus, ok := c.seqStatus[echo.Seq]
+		c.mutex.Unlock()
 
-		if !c.udp && echo.ID != c.id {
+		if !ok {
 			continue
 		}
 
-		if c.ring(uint16(echo.Seq), uint16(c.seq)) > 1000 {
-			continue
+		if seqStatus.needSeqByte {
+			if len(echo.Data) <= 1 {
+				continue
+			}
+			if echo.Data[0] == seqStatus.seqByte {
+				continue
+			}
+			echo.Data = echo.Data[1:]
 		}
 
-		if len(echo.Data) > 8 && bytes.Equal(echo.Data[:8], c.clientID[:]) {
-			continue
-		}
+		if len(echo.Data) > 0 {
+			c.mutex.Lock()
+			delete(c.seqStatus, echo.Seq)
+			c.mutex.Unlock()
 
-		p := pool.Get().([]byte)[:len(echo.Data)]
-		copy(p, echo.Data)
+			buf := make([]byte, len(echo.Data))
+			copy(buf, echo.Data)
+			select {
+			case c.readQueue <- &packet{
+				p:    buf,
+				addr: &net.UDPAddr{IP: addr.(*net.IPAddr).IP},
+			}:
+			default:
+				errors.LogDebug(context.Background(), addr, " ", echo.Seq, " ", echo.ID, " mask read err queue full")
+			}
 
-		if !c.udp {
-			addr = &net.UDPAddr{IP: addr.(*net.IPAddr).IP}
+			select {
+			case c.pollChan <- struct{}{}:
+			default:
+			}
 		}
+	}
+
+	errors.LogDebug(context.Background(), "xicmp closed")
+
+	close(c.pollChan)
+	close(c.readQueue)
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.closed = true
+	close(c.writeQueue)
+}
+
+func (c *xicmpConnClient) sendLoop() {
+	var addr net.Addr
+
+	pollDelay := initPollDelay
+	pollTimer := time.NewTimer(pollDelay)
+	for {
+		var p *packet
+		pollTimerExpired := false
 
 		select {
-		case c.readCh <- packet{
-			p:    p,
-			addr: addr,
-		}:
-		case <-c.closedCh:
-			pool.Put(p)
+		case p = <-c.writeQueue:
+		default:
+			select {
+			case p = <-c.writeQueue:
+			case <-c.pollChan:
+			case <-pollTimer.C:
+				pollTimerExpired = true
+			}
+		}
+
+		if p != nil {
+			addr = p.addr
+
+			select {
+			case <-c.pollChan:
+			default:
+			}
+		} else if addr != nil {
+			encoded, _ := c.encode(nil)
+			p = &packet{
+				p:    encoded,
+				addr: addr,
+			}
+		}
+
+		if pollTimerExpired {
+			pollDelay = time.Duration(float64(pollDelay) * pollDelayMultiplier)
+			if pollDelay > maxPollDelay {
+				pollDelay = maxPollDelay
+			}
+		} else {
+			if !pollTimer.Stop() {
+				<-pollTimer.C
+			}
+			pollDelay = initPollDelay
+		}
+		pollTimer.Reset(pollDelay)
+
+		if c.closed {
 			return
+		}
+
+		if p != nil {
+			_, err := c.icmpConn.WriteTo(p.p, p.addr)
+			if err != nil {
+				errors.LogDebug(context.Background(), p.addr, " xicmp writeto err ", err)
+			}
 		}
 	}
 }
 
 func (c *xicmpConnClient) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	select {
-	case packet := <-c.readCh:
-		if packet.p != nil {
-			n = copy(p, packet.p)
-			pool.Put(packet.p)
-		}
-		return n, packet.addr, packet.err
-	case <-c.closedCh:
-		return 0, nil, io.EOF
+	packet, ok := <-c.readQueue
+	if !ok {
+		return 0, nil, net.ErrClosed
 	}
+	if len(p) < len(packet.p) {
+		errors.LogDebug(context.Background(), packet.addr, " mask read err short buffer ", len(p), " ", len(packet.p))
+		return 0, packet.addr, nil
+	}
+	copy(p, packet.p)
+	return len(packet.p), packet.addr, nil
 }
 
 func (c *xicmpConnClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	if len(p)+16 > finalmask.UDPSize {
-		errors.LogError(context.Background(), "drop packet to ", addr, " with size ", len(p))
+	encoded, err := c.encode(p)
+	if err != nil {
+		errors.LogDebug(context.Background(), addr, " xicmp wireformat err ", err)
 		return 0, nil
 	}
 
-	c.mu.Lock()
-	seq := c.seq
-	c.seq += 1
-	c.seq %= 65536
-	c.mu.Unlock()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	ip := addr.(*net.UDPAddr).IP
-	if len(c.ips) > 0 {
-		ip = c.ips[mathrand.Intn(len(c.ips))].AsSlice()
+	if c.closed {
+		return 0, io.ErrClosedPipe
 	}
 
-	if c.udp {
-		addr = &net.UDPAddr{IP: ip}
-	} else {
-		addr = &net.IPAddr{IP: ip}
+	select {
+	case c.writeQueue <- &packet{
+		p:    encoded,
+		addr: &net.IPAddr{IP: addr.(*net.UDPAddr).IP},
+	}:
+		return len(p), nil
+	default:
+		errors.LogDebug(context.Background(), addr, " mask write err queue full")
+		return 0, nil
 	}
-
-	b := pool.Get().([]byte)[:finalmask.UDPSize]
-	defer pool.Put(b)
-
-	copy(b[8:], c.clientID[:])
-	copy(b[16:], p)
-
-	if ip.To4() != nil {
-		b = marshal(b, ipv4.ICMPTypeEcho, c.id, seq, 8+len(p))
-		_, err = c.icmp4.WriteTo(b, addr)
-	} else {
-		b = marshal(b, ipv6.ICMPTypeEchoRequest, c.id, seq, 8+len(p))
-		_, err = c.icmp6.WriteTo(b, addr)
-	}
-
-	if err != nil {
-		errors.LogErrorInner(context.Background(), err, "xicmp write")
-		return 0, err
-	}
-
-	return len(p), nil
 }
 
 func (c *xicmpConnClient) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed() {
-		return nil
-	}
-	close(c.closedCh)
-	_ = c.icmp4.Close()
-	_ = c.icmp6.Close()
-	_ = c.conn.Close()
-	return nil
+	c.closed = true
+	_ = c.icmpConn.Close()
+	return c.conn.Close()
 }
 
 func (c *xicmpConnClient) LocalAddr() net.Addr {
-	return c.conn.LocalAddr()
+	return &net.UDPAddr{
+		IP:   c.icmpConn.LocalAddr().(*net.IPAddr).IP,
+		Port: c.id,
+	}
 }
 
 func (c *xicmpConnClient) SetDeadline(t time.Time) error {
-	_ = c.icmp4.SetDeadline(t)
-	_ = c.icmp6.SetDeadline(t)
-	return nil
+	return c.icmpConn.SetDeadline(t)
 }
 
 func (c *xicmpConnClient) SetReadDeadline(t time.Time) error {
-	_ = c.icmp4.SetReadDeadline(t)
-	_ = c.icmp6.SetReadDeadline(t)
-	return nil
+	return c.icmpConn.SetReadDeadline(t)
 }
 
 func (c *xicmpConnClient) SetWriteDeadline(t time.Time) error {
-	_ = c.icmp4.SetWriteDeadline(t)
-	_ = c.icmp6.SetWriteDeadline(t)
-	return nil
-}
-
-//go:linkname checksum golang.org/x/net/icmp.checksum
-func checksum(b []byte) uint16
-
-func marshal(b []byte, typ icmp.Type, id, seq int, dataLen int) []byte {
-	is4 := false
-	switch typ := typ.(type) {
-	case ipv4.ICMPType:
-		is4 = true
-		b[0] = byte(typ)
-	case ipv6.ICMPType:
-		b[0] = byte(typ)
-	default:
-		panic(fmt.Sprintf("%T %v", typ, typ))
-	}
-	clear(b[1:4])
-	binary.BigEndian.PutUint16(b[4:], uint16(id))
-	binary.BigEndian.PutUint16(b[6:], uint16(seq))
-	if is4 {
-		s := checksum(b[:8+dataLen])
-		b[2] ^= byte(s)
-		b[3] ^= byte(s >> 8)
-	}
-	return b[:8+dataLen]
+	return c.icmpConn.SetWriteDeadline(t)
 }

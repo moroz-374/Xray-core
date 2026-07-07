@@ -11,7 +11,6 @@ import (
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
-	"github.com/xtls/xray-core/common/geodata"
 	"github.com/xtls/xray-core/common/net"
 	dns_proto "github.com/xtls/xray-core/common/protocol/dns"
 	"github.com/xtls/xray-core/common/session"
@@ -41,32 +40,6 @@ func init() {
 	}))
 }
 
-type DNSRule struct {
-	action  RuleAction
-	qTypes  []uint16
-	domains geodata.DomainMatcher
-	rCode   dnsmessage.RCode
-}
-
-func (r *DNSRule) matchQType(qType uint16) bool {
-	if len(r.qTypes) == 0 {
-		return true
-	}
-	for _, t := range r.qTypes {
-		if t == qType {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *DNSRule) Apply(qType uint16, domain string) bool {
-	if !r.matchQType(qType) {
-		return false
-	}
-	return r.domains == nil || r.domains.MatchAny(strings.TrimSuffix(strings.ToLower(domain), "."))
-}
-
 type ownLinkVerifier interface {
 	IsOwnLink(ctx context.Context) bool
 }
@@ -75,9 +48,10 @@ type Handler struct {
 	client          dns.Client
 	fdns            dns.FakeDNSEngine
 	ownLinkVerifier ownLinkVerifier
-	rewriteServer   net.Destination
+	server          net.Destination
 	timeout         time.Duration
-	rules           []*DNSRule
+	nonIPQuery      string
+	blockTypes      []int32
 }
 
 func (h *Handler) Init(config *Config, dnsClient dns.Client, policyManager policy.Manager) error {
@@ -88,30 +62,14 @@ func (h *Handler) Init(config *Config, dnsClient dns.Client, policyManager polic
 		h.ownLinkVerifier = v
 	}
 
-	if config.RewriteServer != nil {
-		h.rewriteServer = config.RewriteServer.AsDestination()
+	if config.Server != nil {
+		h.server = config.Server.AsDestination()
 	}
-
-	h.rules = make([]*DNSRule, 0, len(config.Rule))
-	for _, r := range config.Rule {
-		rule := &DNSRule{
-			action: r.Action,
-			qTypes: make([]uint16, 0, len(r.QType)),
-			rCode:  dnsmessage.RCode(r.RCode),
-		}
-		for _, t := range r.QType {
-			rule.qTypes = append(rule.qTypes, uint16(t))
-		}
-		if len(r.Domain) > 0 {
-			m, err := geodata.DomainReg.BuildDomainMatcher(r.Domain)
-			if err != nil {
-				return err
-			}
-			rule.domains = m
-		}
-		h.rules = append(h.rules, rule)
+	h.nonIPQuery = config.Non_IPQuery
+	if h.nonIPQuery == "" {
+		h.nonIPQuery = "reject"
 	}
-
+	h.blockTypes = config.BlockTypes
 	return nil
 }
 
@@ -119,36 +77,28 @@ func (h *Handler) isOwnLink(ctx context.Context) bool {
 	return h.ownLinkVerifier != nil && h.ownLinkVerifier.IsOwnLink(ctx)
 }
 
-func parseQuery(b []byte) (id uint16, qType dnsmessage.Type, domain string, ok bool) {
+func parseIPQuery(b []byte) (r bool, domain string, id uint16, qType dnsmessage.Type) {
 	var parser dnsmessage.Parser
 	header, err := parser.Start(b)
 	if err != nil {
 		errors.LogInfoInner(context.Background(), err, "parser start")
 		return
 	}
+
 	id = header.ID
 	q, err := parser.Question()
 	if err != nil {
 		errors.LogInfoInner(context.Background(), err, "question")
 		return
 	}
-	qType = q.Type
 	domain = q.Name.String()
-	ok = true
-	return
-}
+	qType = q.Type
+	if qType != dnsmessage.TypeA && qType != dnsmessage.TypeAAAA {
+		return
+	}
 
-func (h *Handler) applyRules(qType dnsmessage.Type, domain string) (RuleAction, dnsmessage.RCode) {
-	qCode := uint16(qType)
-	for _, r := range h.rules {
-		if r.Apply(qCode, domain) {
-			return r.action, r.rCode
-		}
-	}
-	if qType == dnsmessage.TypeA || qType == dnsmessage.TypeAAAA {
-		return RuleAction_Hijack, dnsmessage.RCodeSuccess
-	}
-	return RuleAction_Return, dnsmessage.RCodeSuccess
+	r = true
+	return
 }
 
 // Process implements proxy.Outbound.
@@ -163,14 +113,14 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 	srcNetwork := ob.Target.Network
 
 	dest := ob.Target
-	if h.rewriteServer.Network != net.Network_Unknown {
-		dest.Network = h.rewriteServer.Network
+	if h.server.Network != net.Network_Unknown {
+		dest.Network = h.server.Network
 	}
-	if h.rewriteServer.Address != nil {
-		dest.Address = h.rewriteServer.Address
+	if h.server.Address != nil {
+		dest.Address = h.server.Address
 	}
-	if h.rewriteServer.Port != 0 {
-		dest.Port = h.rewriteServer.Port
+	if h.server.Port != 0 {
+		dest.Port = h.server.Port
 	}
 
 	errors.LogInfo(ctx, "handling DNS traffic to ", dest)
@@ -215,7 +165,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 	}
 
 	if session.TimeoutOnlyFromContext(ctx) {
-		ctx = context.Background()
+		ctx, _ = context.WithCancel(context.Background())
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -233,52 +183,51 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 			if err == io.EOF {
 				return nil
 			}
+
 			if err != nil {
 				return err
 			}
 
 			timer.Update()
 
-			if h.isOwnLink(ctx) {
-				if err := connWriter.WriteMessage(b); err != nil {
-					return err
+			if !h.isOwnLink(ctx) {
+				isIPQuery, domain, id, qType := parseIPQuery(b.Bytes())
+				if len(h.blockTypes) > 0 {
+					for _, blocktype := range h.blockTypes {
+						if blocktype == int32(qType) {
+							b.Release()
+							errors.LogInfo(ctx, "blocked type ", qType, " query for domain ", domain)
+							if h.nonIPQuery == "reject" {
+								err := h.rejectNonIPQuery(id, qType, domain, writer)
+								if err != nil {
+									return err
+								}
+							}
+							return nil
+						}
+					}
 				}
-				continue
-			}
-
-			id, qType, domain, ok := parseQuery(b.Bytes())
-			if !ok {
-				b.Release()
-				continue
-			}
-
-			action, rCode := h.applyRules(qType, domain)
-			switch action {
-			case RuleAction_Drop:
-				b.Release()
-				errors.LogInfo(ctx, "blocked type ", qType, " query for domain ", domain)
-			case RuleAction_Return:
-				b.Release()
-				errors.LogInfo(ctx, "rejected type ", qType, " query for domain ", domain)
-				if err := h.rejectNonIPQuery(id, qType, domain, writer, rCode); err != nil {
-					return err
+				if isIPQuery {
+					b.Release()
+					go h.handleIPQuery(id, qType, domain, writer, timer)
+					continue
 				}
-			case RuleAction_Hijack:
-				b.Release()
-				if qType != dnsmessage.TypeA && qType != dnsmessage.TypeAAAA {
-					errors.LogError(ctx, "can only hijack A/AAAA records")
-					if err := h.rejectNonIPQuery(id, qType, domain, writer, rCode); err != nil {
+				if h.nonIPQuery == "drop" {
+					b.Release()
+					continue
+				}
+				if h.nonIPQuery == "reject" {
+					b.Release()
+					err := h.rejectNonIPQuery(id, qType, domain, writer)
+					if err != nil {
 						return err
 					}
-				} else {
-					go h.handleIPQuery(id, qType, domain, writer, timer)
+					continue
 				}
-			case RuleAction_Direct:
-				if err := connWriter.WriteMessage(b); err != nil {
-					return err
-				}
-			default:
-				panic("unknown rule action")
+			}
+
+			if err := connWriter.WriteMessage(b); err != nil {
+				return err
 			}
 		}
 	}
@@ -312,35 +261,52 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 
 func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string, writer dns_proto.MessageWriter, timer *signal.ActivityTimer) {
 	var ips []net.IP
-	var ttl uint32
 	var err error
+
+	var ttl4 uint32
+	var ttl6 uint32
 
 	switch qType {
 	case dnsmessage.TypeA:
-		ips, ttl, err = h.client.LookupIP(domain, dns.IPOption{
+		ips, ttl4, err = h.client.LookupIP(domain, dns.IPOption{
 			IPv4Enable: true,
 			IPv6Enable: false,
 			FakeEnable: true,
 		})
 	case dnsmessage.TypeAAAA:
-		ips, ttl, err = h.client.LookupIP(domain, dns.IPOption{
+		ips, ttl6, err = h.client.LookupIP(domain, dns.IPOption{
 			IPv4Enable: false,
 			IPv6Enable: true,
 			FakeEnable: true,
 		})
 	}
 
-	rCode := dns.RCodeFromError(err)
-	if rCode == 0 && len(ips) == 0 && !go_errors.Is(err, dns.ErrEmptyResponse) {
+	rcode := dns.RCodeFromError(err)
+	if rcode == 0 && len(ips) == 0 && !go_errors.Is(err, dns.ErrEmptyResponse) {
 		errors.LogInfoInner(context.Background(), err, "ip query")
 		return
+	}
+
+	switch qType {
+	case dnsmessage.TypeA:
+		normalized := make([]net.IP, 0, len(ips))
+		for _, ip := range ips {
+			normalized = append(normalized, ip.To4())
+		}
+		ips = normalized
+	case dnsmessage.TypeAAAA:
+		normalized := make([]net.IP, 0, len(ips))
+		for _, ip := range ips {
+			normalized = append(normalized, ip.To16())
+		}
+		ips = normalized
 	}
 
 	b := buf.New()
 	rawBytes := b.Extend(buf.Size)
 	builder := dnsmessage.NewBuilder(rawBytes[:0], dnsmessage.Header{
 		ID:                 id,
-		RCode:              dnsmessage.RCode(rCode),
+		RCode:              dnsmessage.RCode(rcode),
 		RecursionAvailable: true,
 		RecursionDesired:   true,
 		Response:           true,
@@ -355,25 +321,17 @@ func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string,
 	}))
 	common.Must(builder.StartAnswers())
 
-	rHeader := dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(domain), Class: dnsmessage.ClassINET, TTL: ttl}
-	switch qType {
-	case dnsmessage.TypeA:
-		for _, ip := range ips {
-			ip = ip.To4()
-			if len(ip) == net.IPv4len {
-				var r dnsmessage.AResource
-				copy(r.A[:], ip)
-				common.Must(builder.AResource(rHeader, r))
-			}
-		}
-	case dnsmessage.TypeAAAA:
-		for _, ip := range ips {
-			ip = ip.To16()
-			if len(ip) == net.IPv6len {
-				var r dnsmessage.AAAAResource
-				copy(r.AAAA[:], ip)
-				common.Must(builder.AAAAResource(rHeader, r))
-			}
+	rHeader4 := dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(domain), Class: dnsmessage.ClassINET, TTL: ttl4}
+	rHeader6 := dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(domain), Class: dnsmessage.ClassINET, TTL: ttl6}
+	for _, ip := range ips {
+		if len(ip) == net.IPv4len {
+			var r dnsmessage.AResource
+			copy(r.A[:], ip)
+			common.Must(builder.AResource(rHeader4, r))
+		} else {
+			var r dnsmessage.AAAAResource
+			copy(r.AAAA[:], ip)
+			common.Must(builder.AAAAResource(rHeader6, r))
 		}
 	}
 	msgBytes, err := builder.Finish()
@@ -390,7 +348,7 @@ func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string,
 	}
 }
 
-func (h *Handler) rejectNonIPQuery(id uint16, qType dnsmessage.Type, domain string, writer dns_proto.MessageWriter, rCode dnsmessage.RCode) error {
+func (h *Handler) rejectNonIPQuery(id uint16, qType dnsmessage.Type, domain string, writer dns_proto.MessageWriter) error {
 	domainT := strings.TrimSuffix(domain, ".")
 	if domainT == "" {
 		return errors.New("empty domain name")
@@ -399,7 +357,7 @@ func (h *Handler) rejectNonIPQuery(id uint16, qType dnsmessage.Type, domain stri
 	rawBytes := b.Extend(buf.Size)
 	builder := dnsmessage.NewBuilder(rawBytes[:0], dnsmessage.Header{
 		ID:                 id,
-		RCode:              rCode,
+		RCode:              dnsmessage.RCodeRefused,
 		RecursionAvailable: true,
 		RecursionDesired:   true,
 		Response:           true,

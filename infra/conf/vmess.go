@@ -7,7 +7,6 @@ import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
-	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/common/uuid"
 	"github.com/xtls/xray-core/proxy/vmess"
 	"github.com/xtls/xray-core/proxy/vmess/inbound"
@@ -59,8 +58,7 @@ func (c *VMessDefaultConfig) Build() *inbound.DefaultConfig {
 }
 
 type VMessInboundConfig struct {
-	Users    []json.RawMessage   `json:"users"`
-	Clients  []json.RawMessage   `json:"clients"`
+	Users    []json.RawMessage   `json:"clients"`
 	Defaults *VMessDefaultConfig `json:"default"`
 }
 
@@ -74,33 +72,25 @@ func (c *VMessInboundConfig) Build() (proto.Message, error) {
 		config.Default = c.Defaults.Build()
 	}
 
-	if c.Clients != nil {
-		c.Users = c.Clients
-	}
 	config.User = make([]*protocol.User, len(c.Users))
-	processUser := func(idx int) error {
-		rawData := c.Users[idx]
+	for idx, rawData := range c.Users {
 		user := new(protocol.User)
 		if err := json.Unmarshal(rawData, user); err != nil {
-			return errors.New("invalid VMess user").Base(err)
+			return nil, errors.New("invalid VMess user").Base(err)
 		}
 		account := new(VMessAccount)
 		if err := json.Unmarshal(rawData, account); err != nil {
-			return errors.New("invalid VMess user").Base(err)
+			return nil, errors.New("invalid VMess user").Base(err)
 		}
 
 		u, err := uuid.ParseString(account.ID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		account.ID = u.String()
 
 		user.Account = serial.ToTypedMessage(account.Build())
 		config.User[idx] = user
-		return nil
-	}
-	if err := task.ParallelForN(len(c.Users), processUser); err != nil {
-		return nil, err
 	}
 
 	return config, nil

@@ -62,8 +62,7 @@ func addInboundUserAction(ctx context.Context, client handlerService.HandlerServ
 		Operation: cserial.ToTypedMessage(
 			&handlerService.AddUserOperation{
 				User: user,
-			},
-		),
+			}),
 	})
 	return err
 }
@@ -81,7 +80,7 @@ func extractInboundUsers(inb *core.InboundHandlerConfig) []*protocol.User {
 	case *vmessin.Config:
 		return ty.User
 	case *vlessin.Config:
-		return ty.Users
+		return ty.Clients
 	case *trojan.ServerConfig:
 		return ty.Users
 	case *shadowsocks.ServerConfig:

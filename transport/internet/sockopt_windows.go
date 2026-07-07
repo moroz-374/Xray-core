@@ -94,7 +94,7 @@ func applyOutboundSocketOptions(network string, address string, fd uintptr, conf
 			if !strings.HasPrefix(network, custom.Network) {
 				continue
 			}
-			level := 0x6 // default TCP
+			var level = 0x6 // default TCP
 			var opt int
 			if len(custom.Opt) == 0 {
 				return errors.New("No opt!")
@@ -155,7 +155,7 @@ func applyInboundSocketOptions(network string, fd uintptr, config *SocketConfig)
 			if !strings.HasPrefix(network, custom.Network) {
 				continue
 			}
-			level := 0x6 // default TCP
+			var level = 0x6 // default TCP
 			var opt int
 			if len(custom.Opt) == 0 {
 				return errors.New("No opt!")
@@ -178,6 +178,10 @@ func applyInboundSocketOptions(network string, fd uintptr, config *SocketConfig)
 		}
 	}
 
+	return nil
+}
+
+func bindAddr(fd uintptr, ip []byte, port uint32) error {
 	return nil
 }
 

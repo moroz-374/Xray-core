@@ -53,27 +53,22 @@ type AlwaysOnInboundHandler struct {
 }
 
 func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *proxyman.ReceiverConfig, proxyConfig interface{}) (*AlwaysOnInboundHandler, error) {
-	sniffingRequest, err := proxyman.BuildSniffingRequest(receiverConfig.SniffingSettings)
-	if err != nil {
-		return nil, err
+	// Set tag and sniffing config in context before creating proxy
+	// This allows proxies like TUN to access these settings
+	ctx = session.ContextWithInbound(ctx, &session.Inbound{Tag: tag})
+	if receiverConfig.SniffingSettings != nil {
+		ctx = session.ContextWithContent(ctx, &session.Content{
+			SniffingRequest: session.SniffingRequest{
+				Enabled:                        receiverConfig.SniffingSettings.Enabled,
+				OverrideDestinationForProtocol: receiverConfig.SniffingSettings.DestinationOverride,
+				ExcludeForDomain:               receiverConfig.SniffingSettings.DomainsExcluded,
+				MetadataOnly:                   receiverConfig.SniffingSettings.MetadataOnly,
+				RouteOnly:                      receiverConfig.SniffingSettings.RouteOnly,
+				LogSniffedDestination:          receiverConfig.SniffingSettings.LogSniffedDestination,
+			},
+		})
 	}
-	src := net.TCPDestination(net.AnyIP, 0)
-	if receiverConfig.Listen != nil {
-		src.Address = receiverConfig.Listen.AsAddress()
-	}
-	if receiverConfig.PortList != nil && len(receiverConfig.PortList.Range) > 0 {
-		src.Port = net.Port(receiverConfig.PortList.Range[0].From)
-	}
-	mss, err := internet.ToMemoryStreamConfig(receiverConfig.StreamSettings)
-	if err != nil {
-		return nil, errors.New("failed to parse stream config").Base(err).AtWarning()
-	}
-
-	newCtx := session.ContextWithInbound(ctx, &session.Inbound{Tag: tag, Source: src})
-	newCtx = session.ContextWithContent(newCtx, &session.Content{SniffingRequest: sniffingRequest})
-	newCtx = session.ContextWithStreamSettings(newCtx, mss)
-
-	rawProxy, err := common.CreateObject(newCtx, proxyConfig)
+	rawProxy, err := common.CreateObject(ctx, proxyConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +94,11 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 		address = net.AnyIP
 	}
 
+	mss, err := internet.ToMemoryStreamConfig(receiverConfig.StreamSettings)
+	if err != nil {
+		return nil, errors.New("failed to parse stream config").Base(err).AtWarning()
+	}
+
 	if receiverConfig.ReceiveOriginalDestination {
 		if mss.SocketSettings == nil {
 			mss.SocketSettings = &internet.SocketConfig{}
@@ -118,7 +118,7 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 				stream:          mss,
 				tag:             tag,
 				dispatcher:      h.mux,
-				sniffingRequest: sniffingRequest,
+				sniffingConfig:  receiverConfig.SniffingSettings,
 				uplinkCounter:   uplinkCounter,
 				downlinkCounter: downlinkCounter,
 				ctx:             ctx,
@@ -140,7 +140,7 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 						recvOrigDest:    receiverConfig.ReceiveOriginalDestination,
 						tag:             tag,
 						dispatcher:      h.mux,
-						sniffingRequest: sniffingRequest,
+						sniffingConfig:  receiverConfig.SniffingSettings,
 						uplinkCounter:   uplinkCounter,
 						downlinkCounter: downlinkCounter,
 						ctx:             ctx,
@@ -155,7 +155,7 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 						address:         address,
 						port:            net.Port(port),
 						dispatcher:      h.mux,
-						sniffingRequest: sniffingRequest,
+						sniffingConfig:  receiverConfig.SniffingSettings,
 						uplinkCounter:   uplinkCounter,
 						downlinkCounter: downlinkCounter,
 						stream:          mss,
@@ -172,12 +172,6 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 
 // Start implements common.Runnable.
 func (h *AlwaysOnInboundHandler) Start() error {
-	// for inbound without worker (TUN)
-	if run, ok := h.proxy.(common.Runnable); ok {
-		if err := run.Start(); err != nil {
-			return errors.New("failed to start proxy").Base(err)
-		}
-	}
 	for _, worker := range h.workers {
 		if err := worker.Start(); err != nil {
 			return err
@@ -193,7 +187,6 @@ func (h *AlwaysOnInboundHandler) Close() error {
 		errs = append(errs, worker.Close())
 	}
 	errs = append(errs, h.mux.Close())
-	errs = append(errs, common.Close(h.proxy))
 	if err := errors.Combine(errs...); err != nil {
 		return errors.New("failed to close all resources").Base(err)
 	}

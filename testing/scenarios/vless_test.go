@@ -54,7 +54,7 @@ func TestVless(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&inbound.Config{
-					Users: []*protocol.User{
+					Clients: []*protocol.User{
 						{
 							Account: serial.ToTypedMessage(&vless.Account{
 								Id: userID.String(),
@@ -66,9 +66,7 @@ func TestVless(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -88,9 +86,9 @@ func TestVless(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -159,7 +157,7 @@ func TestVlessTls(t *testing.T) {
 					},
 				}),
 				ProxySettings: serial.ToTypedMessage(&inbound.Config{
-					Users: []*protocol.User{
+					Clients: []*protocol.User{
 						{
 							Account: serial.ToTypedMessage(&vless.Account{
 								Id: userID.String(),
@@ -171,9 +169,7 @@ func TestVlessTls(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -193,9 +189,9 @@ func TestVlessTls(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -281,7 +277,7 @@ func TestVlessXtlsVision(t *testing.T) {
 					},
 				}),
 				ProxySettings: serial.ToTypedMessage(&inbound.Config{
-					Users: []*protocol.User{
+					Clients: []*protocol.User{
 						{
 							Account: serial.ToTypedMessage(&vless.Account{
 								Id:   userID.String(),
@@ -294,9 +290,7 @@ func TestVlessXtlsVision(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -316,9 +310,9 @@ func TestVlessXtlsVision(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -413,7 +407,7 @@ func TestVlessXtlsVisionReality(t *testing.T) {
 					},
 				}),
 				ProxySettings: serial.ToTypedMessage(&inbound.Config{
-					Users: []*protocol.User{
+					Clients: []*protocol.User{
 						{
 							Account: serial.ToTypedMessage(&vless.Account{
 								Id:   userID.String(),
@@ -426,9 +420,7 @@ func TestVlessXtlsVisionReality(t *testing.T) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-				}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 			},
 		},
 	}
@@ -448,9 +440,9 @@ func TestVlessXtlsVisionReality(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					RewriteAddress:  net.NewIPOrDomain(dest.Address),
-					RewritePort:     uint32(dest.Port),
-					AllowedNetworks: []net.Network{net.Network_TCP},
+					Address:  net.NewIPOrDomain(dest.Address),
+					Port:     uint32(dest.Port),
+					Networks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -553,7 +545,7 @@ func TestVlessRealityFingerprints(t *testing.T) {
 						},
 					}),
 					ProxySettings: serial.ToTypedMessage(&inbound.Config{
-						Users: []*protocol.User{
+						Clients: []*protocol.User{
 							{
 								Account: serial.ToTypedMessage(&vless.Account{
 									Id: userID.String(),
@@ -565,9 +557,7 @@ func TestVlessRealityFingerprints(t *testing.T) {
 			},
 			Outbound: []*core.OutboundHandlerConfig{
 				{
-					ProxySettings: serial.ToTypedMessage(&freedom.Config{
-						FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
-					}),
+					ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
 				},
 			},
 		}
@@ -586,9 +576,9 @@ func TestVlessRealityFingerprints(t *testing.T) {
 						Listen:   net.NewIPOrDomain(net.LocalHostIP),
 					}),
 					ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-						RewriteAddress:  net.NewIPOrDomain(dest.Address),
-						RewritePort:     uint32(dest.Port),
-						AllowedNetworks: []net.Network{net.Network_TCP},
+						Address:  net.NewIPOrDomain(dest.Address),
+						Port:     uint32(dest.Port),
+						Networks: []net.Network{net.Network_TCP},
 					}),
 				},
 			},

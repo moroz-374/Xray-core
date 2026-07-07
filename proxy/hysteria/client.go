@@ -17,6 +17,7 @@ import (
 	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/policy"
+	hyCtx "github.com/xtls/xray-core/proxy/hysteria/ctx"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/hysteria"
@@ -29,13 +30,6 @@ type Client struct {
 }
 
 func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
-	v := core.MustFromContext(ctx)
-	p := v.GetFeature(policy.ManagerType()).(policy.Manager)
-
-	streamSettings := session.StreamSettingsFromContext(ctx).(*internet.MemoryStreamConfig)
-	if _, ok := streamSettings.ProtocolSettings.(*hysteria.Config); !ok {
-		return nil, errors.New("not hysteria transport")
-	}
 	if config.Server == nil {
 		return nil, errors.New(`no target server found`)
 	}
@@ -44,10 +38,12 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 		return nil, errors.New("failed to get server spec").Base(err)
 	}
 
-	return &Client{
+	v := core.MustFromContext(ctx)
+	client := &Client{
 		server:        server,
-		policyManager: p,
-	}, nil
+		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
+	}
+	return client, nil
 }
 
 func (c *Client) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
@@ -60,7 +56,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	ob.CanSpliceCopy = 3
 	target := ob.Target
 
-	conn, err := dialer.Dial(hysteria.ContextWithDatagram(ctx, target.Network == net.Network_UDP), c.server.Destination)
+	conn, err := dialer.Dial(hyCtx.ContextWithRequireDatagram(ctx, target.Network == net.Network_UDP), c.server.Destination)
 	if err != nil {
 		return errors.New("failed to find an available destination").AtWarning().Base(err)
 	}
@@ -122,7 +118,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 
 	if target.Network == net.Network_UDP {
 		iConn := stat.TryUnwrapStatsConn(conn)
-		_, ok := iConn.(*hysteria.InterConn)
+		_, ok := iConn.(*hysteria.InterUdpConn)
 		if !ok {
 			return errors.New("udp requires hysteria udp transport")
 		}
@@ -131,7 +127,8 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			defer timer.SetTimeout(sessionPolicy.Timeouts.DownlinkOnly)
 
 			writer := &UDPWriter{
-				writer: conn,
+				Writer: conn,
+				buf:    make([]byte, MaxUDPSize),
 				addr:   target.NetAddr(),
 			}
 
@@ -146,7 +143,8 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			defer timer.SetTimeout(sessionPolicy.Timeouts.UplinkOnly)
 
 			reader := &UDPReader{
-				reader: conn,
+				Reader: conn,
+				buf:    make([]byte, MaxUDPSize),
 				df:     &Defragger{},
 			}
 
@@ -175,22 +173,28 @@ func init() {
 }
 
 type UDPWriter struct {
-	writer io.Writer
+	Writer io.Writer
+	buf    []byte
 	addr   string
-	buf    [buf.Size]byte
 }
 
-func (w *UDPWriter) SendMessage(msg *UDPMessage) error {
-	msgN := msg.Serialize(w.buf[:])
+func (w *UDPWriter) sendMsg(msg *UDPMessage) error {
+	msgN := msg.Serialize(w.buf)
 	if msgN < 0 {
 		return nil
 	}
-	_, err := w.writer.Write(w.buf[:msgN])
+	_, err := w.Writer.Write(w.buf[:msgN])
 	return err
 }
 
 func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	for i, b := range mb {
+	for {
+		mb2, b := buf.SplitFirst(mb)
+		mb = mb2
+		if b == nil {
+			break
+		}
+
 		addr := w.addr
 		if b.UDP != nil {
 			addr = b.UDP.NetAddr()
@@ -205,20 +209,22 @@ func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			Data:      b.Bytes(),
 		}
 
-		err := w.SendMessage(msg)
+		err := w.sendMsg(msg)
 		var errTooLarge *quic.DatagramTooLargeError
 		if go_errors.As(err, &errTooLarge) {
 			msg.PacketID = uint16(rand.Intn(0xFFFF)) + 1
 			fMsgs := FragUDPMessage(msg, int(errTooLarge.MaxDatagramPayloadSize))
 			for _, fMsg := range fMsgs {
-				err := w.SendMessage(&fMsg)
+				err := w.sendMsg(&fMsg)
 				if err != nil {
-					buf.ReleaseMulti(mb[i:])
+					b.Release()
+					buf.ReleaseMulti(mb)
 					return err
 				}
 			}
 		} else if err != nil {
-			buf.ReleaseMulti(mb[i:])
+			b.Release()
+			buf.ReleaseMulti(mb)
 			return err
 		}
 
@@ -229,21 +235,30 @@ func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 }
 
 type UDPReader struct {
-	reader   io.Reader
-	df       *Defragger
-	firstBuf *buf.Buffer
+	Reader    io.Reader
+	buf       []byte
+	df        *Defragger
+	firstMsg  *UDPMessage
+	firstDest *net.Destination
 }
 
-func (r *UDPReader) ReadFrom(p []byte) (n int, addr *net.Destination, err error) {
-	for {
-		var buf [hysteria.MaxDatagramFrameSize]byte
+func (r *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	if r.firstMsg != nil {
+		buffer := buf.New()
+		buffer.Write(r.firstMsg.Data)
+		buffer.UDP = r.firstDest
 
-		n, err := r.reader.Read(buf[:])
+		r.firstMsg = nil
+
+		return buf.MultiBuffer{buffer}, nil
+	}
+	for {
+		n, err := r.Reader.Read(r.buf)
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 
-		msg, err := ParseUDPMessage(buf[:n])
+		msg, err := ParseUDPMessage(r.buf[:n])
 		if err != nil {
 			continue
 		}
@@ -255,31 +270,14 @@ func (r *UDPReader) ReadFrom(p []byte) (n int, addr *net.Destination, err error)
 
 		dest, err := net.ParseDestination("udp:" + dfMsg.Addr)
 		if err != nil {
+			errors.LogDebug(context.Background(), dfMsg.Addr, " ParseDestination err ", err)
 			continue
 		}
 
-		if len(p) < len(dfMsg.Data) {
-			continue
-		}
+		buffer := buf.New()
+		buffer.Write(dfMsg.Data)
+		buffer.UDP = &dest
 
-		return copy(p, dfMsg.Data), &dest, nil
+		return buf.MultiBuffer{buffer}, nil
 	}
-}
-
-func (r *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	if r.firstBuf != nil {
-		mb := buf.MultiBuffer{r.firstBuf}
-		r.firstBuf = nil
-		return mb, nil
-	}
-	b := buf.New()
-	b.Resize(0, buf.Size)
-	n, addr, err := r.ReadFrom(b.Bytes())
-	if err != nil {
-		b.Release()
-		return nil, err
-	}
-	b.Resize(0, int32(n))
-	b.UDP = addr
-	return buf.MultiBuffer{b}, nil
 }

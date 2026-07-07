@@ -1,4 +1,4 @@
-//go:build linux && !android
+//go:build linux
 
 package net
 
@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -14,38 +13,43 @@ import (
 	"github.com/xtls/xray-core/common/errors"
 )
 
-func FindProcess(network, srcIP string, srcPort uint16, destIP string, destPort uint16) (PID int, Name string, AbsolutePath string, err error) {
-	isLocal, err := IsLocal(net.ParseIP(srcIP))
+func FindProcess(dest Destination) (PID int, Name string, AbsolutePath string, err error) {
+	isLocal, err := IsLocal(dest.Address.IP())
 	if err != nil {
 		return 0, "", "", errors.New("failed to determine if address is local: ", err)
 	}
 	if !isLocal {
 		return 0, "", "", ErrNotLocal
 	}
-	if network != "tcp" && network != "udp" {
+	if dest.Network != Network_TCP && dest.Network != Network_UDP {
 		panic("Unsupported network type for process lookup.")
 	}
-
+	// the core should never has a domain as source(?
+	if dest.Address.Family() == AddressFamilyDomain {
+		panic("Domain addresses are not supported for process lookup.")
+	}
 	var procFile string
 
-	switch network {
-	case "tcp":
-		if net.ParseIP(srcIP).To4() != nil {
+	switch dest.Network {
+	case Network_TCP:
+		if dest.Address.Family() == AddressFamilyIPv4 {
 			procFile = "/proc/net/tcp"
-		} else {
+		}
+		if dest.Address.Family() == AddressFamilyIPv6 {
 			procFile = "/proc/net/tcp6"
 		}
-	case "udp":
-		if net.ParseIP(srcIP).To4() != nil {
+	case Network_UDP:
+		if dest.Address.Family() == AddressFamilyIPv4 {
 			procFile = "/proc/net/udp"
-		} else {
+		}
+		if dest.Address.Family() == AddressFamilyIPv6 {
 			procFile = "/proc/net/udp6"
 		}
 	default:
 		panic("Unsupported network type for process lookup.")
 	}
 
-	targetHexAddr, err := formatLittleEndianString(net.ParseIP(srcIP), Port(srcPort))
+	targetHexAddr, err := formatLittleEndianString(dest.Address, dest.Port)
 	if err != nil {
 		return 0, "", "", errors.New("failed to format address: ", err)
 	}
@@ -55,7 +59,7 @@ func FindProcess(network, srcIP string, srcPort uint16, destIP string, destPort 
 		return 0, "", "", errors.New("could not search in ", procFile).Base(err)
 	}
 	if inode == "" {
-		return 0, "", "", errors.New("connection for ", srcIP, ":", srcPort, " not found in ", procFile)
+		return 0, "", "", errors.New("connection for ", dest.Address, ":", dest.Port, " not found in ", procFile)
 	}
 
 	pidStr, err := findPidByInode(inode)
@@ -82,16 +86,16 @@ func FindProcess(network, srcIP string, srcPort uint16, destIP string, destPort 
 	return pid, procName, absPath, nil
 }
 
-func formatLittleEndianString(addr net.IP, port Port) (string, error) {
-	ip := addr
+func formatLittleEndianString(addr Address, port Port) (string, error) {
+	ip := addr.IP()
 	var ipBytes []byte
-	if ip.To4() != nil {
+	if addr.Family() == AddressFamilyIPv4 {
 		ipBytes = ip.To4()
 	} else {
 		ipBytes = ip.To16()
 	}
 	if ipBytes == nil {
-		return "", errors.New("invalid IP format for ", addr, ": ", ip)
+		return "", errors.New("invalid IP format for ", addr.Family(), ": ", ip)
 	}
 
 	for i, j := 0, len(ipBytes)-1; i < j; i, j = i+1, j-1 {

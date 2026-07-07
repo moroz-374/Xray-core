@@ -2,7 +2,6 @@ package shadowsocks_2022
 
 import (
 	"context"
-	"time"
 
 	shadowsocks "github.com/sagernet/sing-shadowsocks"
 	"github.com/sagernet/sing-shadowsocks/shadowaead_2022"
@@ -19,7 +18,6 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/session"
-	"github.com/xtls/xray-core/common/signal"
 	"github.com/xtls/xray-core/common/singbridge"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport/internet/stat"
@@ -117,11 +115,7 @@ func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata M.M
 	})
 	errors.LogInfo(ctx, "tunnelling request to tcp:", metadata.Destination)
 	dispatcher := session.DispatcherFromContext(ctx)
-	destination, err := singbridge.ToDestination(metadata.Destination, net.Network_TCP)
-	if err != nil {
-		return err
-	}
-	link, err := dispatcher.Dispatch(ctx, destination)
+	link, err := dispatcher.Dispatch(ctx, singbridge.ToDestination(metadata.Destination, net.Network_TCP))
 	if err != nil {
 		return err
 	}
@@ -142,10 +136,7 @@ func (i *Inbound) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 	})
 	errors.LogInfo(ctx, "tunnelling request to udp:", metadata.Destination)
 	dispatcher := session.DispatcherFromContext(ctx)
-	destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)
-	if err != nil {
-		return err
-	}
+	destination := singbridge.ToDestination(metadata.Destination, net.Network_UDP)
 	link, err := dispatcher.Dispatch(ctx, destination)
 	if err != nil {
 		return err
@@ -154,9 +145,6 @@ func (i *Inbound) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 		Reader: link.Reader,
 		Writer: link.Writer,
 		Dest:   destination,
-		T: signal.CancelAfterInactivity(ctx, func() {
-			common.Interrupt(link.Reader)
-		}, 300*time.Second),
 	}
 	return bufio.CopyPacketConn(ctx, conn, outConn)
 }

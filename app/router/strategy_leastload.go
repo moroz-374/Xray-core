@@ -3,7 +3,6 @@ package router
 import (
 	"context"
 	"math"
-	"slices"
 	"sort"
 	"time"
 
@@ -78,7 +77,7 @@ func (s *LeastLoadStrategy) PickOutbound(candidates []string) string {
 }
 
 func (s *LeastLoadStrategy) pickOutbounds(candidates []string) []*node {
-	qualified := s.getNodes(candidates)
+	qualified := s.getNodes(candidates, time.Duration(s.settings.MaxRTT))
 	selects := s.selectLeastLoad(qualified)
 	return selects
 }
@@ -139,7 +138,7 @@ func (s *LeastLoadStrategy) selectLeastLoad(nodes []*node) []*node {
 	return nodes[:count]
 }
 
-func (s *LeastLoadStrategy) getNodes(candidates []string) []*node {
+func (s *LeastLoadStrategy) getNodes(candidates []string, maxRTT time.Duration) []*node {
 	if s.observer == nil {
 		errors.LogError(s.ctx, "observer is nil")
 		return make([]*node, 0)
@@ -152,10 +151,12 @@ func (s *LeastLoadStrategy) getNodes(candidates []string) []*node {
 
 	results := observeResult.(*observatory.ObservationResult)
 
+	outboundlist := outboundList(candidates)
+
 	var ret []*node
 
 	for _, v := range results.Status {
-		if s.shouldSelectNode(v, candidates) {
+		if v.Alive && (v.Delay < maxRTT.Milliseconds() || maxRTT == 0) && outboundlist.contains(v.OutboundTag) {
 			record := &node{
 				Tag:              v.OutboundTag,
 				CountAll:         1,
@@ -171,31 +172,14 @@ func (s *LeastLoadStrategy) getNodes(candidates []string) []*node {
 				record.RTTDeviationCost = time.Duration(s.costs.Apply(v.OutboundTag, float64(v.HealthPing.Deviation)))
 				record.CountAll = int(v.HealthPing.All)
 				record.CountFail = int(v.HealthPing.Fail)
-			}
 
+			}
 			ret = append(ret, record)
 		}
 	}
 
 	leastloadSort(ret)
 	return ret
-}
-
-func (s *LeastLoadStrategy) shouldSelectNode(v *observatory.OutboundStatus, candidates []string) bool {
-	maxRTT := time.Duration(s.settings.MaxRTT)
-	if !v.Alive {
-		return false
-	}
-	if maxRTT != 0 && v.Delay >= maxRTT.Milliseconds() {
-		return false
-	}
-	if !slices.Contains(candidates, v.OutboundTag) {
-		return false
-	}
-	if v.HealthPing != nil && v.HealthPing.All > 0 && s.settings.Tolerance > 0 && float64(v.HealthPing.Fail)/float64(v.HealthPing.All) > float64(s.settings.Tolerance) {
-		return false
-	}
-	return true
 }
 
 func leastloadSort(nodes []*node) {

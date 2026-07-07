@@ -6,4 +6,4 @@
 //	xtaci@github for translating to Golang
 package kcp
 
-const ProtocolName = "mkcp"
+const protocolName = "mkcp"

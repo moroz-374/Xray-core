@@ -3,7 +3,6 @@ package singbridge
 import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 )
 
@@ -18,14 +17,14 @@ func ToNetwork(network string) net.Network {
 	}
 }
 
-func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination, error) {
+func ToDestination(socksaddr M.Socksaddr, network net.Network) net.Destination {
 	// IsFqdn() implicitly checks if the domain name is valid
 	if socksaddr.IsFqdn() {
 		return net.Destination{
 			Network: network,
 			Address: net.DomainAddress(socksaddr.Fqdn),
 			Port:    net.Port(socksaddr.Port),
-		}, nil
+		}
 	}
 
 	// IsIP() implicitly checks if the IP address is valid
@@ -34,10 +33,10 @@ func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination,
 			Network: network,
 			Address: net.IPAddress(socksaddr.Addr.AsSlice()),
 			Port:    net.Port(socksaddr.Port),
-		}, nil
+		}
 	}
 
-	return net.Destination{}, errors.New("invalid socks address: ", socksaddr)
+	return net.Destination{}
 }
 
 func ToSocksaddr(destination net.Destination) M.Socksaddr {

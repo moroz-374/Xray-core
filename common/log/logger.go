@@ -98,6 +98,7 @@ func (l *generalLogger) run() {
 }
 
 func (l *generalLogger) Handle(msg Message) {
+
 	select {
 	case l.buffer <- msg:
 	default:

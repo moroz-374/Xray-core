@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,10 +10,9 @@ import (
 	"strings"
 
 	"github.com/xtls/xray-core/common/errors"
-	"github.com/xtls/xray-core/common/geodata"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/strmatcher"
 	"github.com/xtls/xray-core/features/routing"
-	"github.com/xtls/xray-core/features/routing/dns"
 )
 
 type Condition interface {
@@ -45,18 +45,67 @@ func (v *ConditionChan) Len() int {
 	return len(*v)
 }
 
-type DomainMatcher struct{ geodata.DomainMatcher }
+var matcherTypeMap = map[Domain_Type]strmatcher.Type{
+	Domain_Plain:  strmatcher.Substr,
+	Domain_Regex:  strmatcher.Regex,
+	Domain_Domain: strmatcher.Domain,
+	Domain_Full:   strmatcher.Full,
+}
 
-func NewDomainMatcher(rules []*geodata.DomainRule) (*DomainMatcher, error) {
-	m, err := geodata.DomainReg.BuildDomainMatcher(rules)
+type DomainMatcher struct {
+	Matchers strmatcher.IndexMatcher
+}
+
+func SerializeDomainMatcher(domains []*Domain, w io.Writer) error {
+
+	g := strmatcher.NewMphMatcherGroup()
+	for _, d := range domains {
+		matcherType, f := matcherTypeMap[d.Type]
+		if !f {
+			continue
+		}
+
+		_, err := g.AddPattern(d.Value, matcherType)
+		if err != nil {
+			return err
+		}
+	}
+	g.Build()
+	// serialize
+	return g.Serialize(w)
+}
+
+func NewDomainMatcherFromBuffer(data []byte) (*strmatcher.MphMatcherGroup, error) {
+	matcher, err := strmatcher.NewMphMatcherGroupFromBuffer(data)
 	if err != nil {
 		return nil, err
 	}
-	return &DomainMatcher{DomainMatcher: m}, nil
+	return matcher, nil
+}
+
+func NewMphMatcherGroup(domains []*Domain) (*DomainMatcher, error) {
+	g := strmatcher.NewMphMatcherGroup()
+	for i, d := range domains {
+		domains[i] = nil
+		matcherType, f := matcherTypeMap[d.Type]
+		if !f {
+			errors.LogError(context.Background(), "ignore unsupported domain type ", d.Type, " of rule ", d.Value)
+			continue
+		}
+		_, err := g.AddPattern(d.Value, matcherType)
+		if err != nil {
+			errors.LogErrorInner(context.Background(), err, "ignore domain rule ", d.Type, " ", d.Value)
+			continue
+		}
+	}
+	g.Build()
+	return &DomainMatcher{
+		Matchers: g,
+	}, nil
 }
 
 func (m *DomainMatcher) ApplyDomain(domain string) bool {
-	return m.DomainMatcher.MatchAny(strings.ToLower(domain))
+	return len(m.Matchers.Match(strings.ToLower(domain))) > 0
 }
 
 // Apply implements Condition.
@@ -65,7 +114,7 @@ func (m *DomainMatcher) Apply(ctx routing.Context) bool {
 	if len(domain) == 0 {
 		return false
 	}
-	return m.DomainMatcher.MatchAny(strings.ToLower(domain))
+	return m.ApplyDomain(domain)
 }
 
 type MatcherAsType byte
@@ -78,16 +127,16 @@ const (
 )
 
 type IPMatcher struct {
-	matcher geodata.IPMatcher
+	matcher GeoIPMatcher
 	asType  MatcherAsType
 }
 
-func NewIPMatcher(rules []*geodata.IPRule, asType MatcherAsType) (*IPMatcher, error) {
-	m, err := geodata.IPReg.BuildIPMatcher(rules)
+func NewIPMatcher(geoips []*GeoIP, asType MatcherAsType) (*IPMatcher, error) {
+	matcher, err := BuildOptimizedGeoIPMatcher(geoips...)
 	if err != nil {
 		return nil, err
 	}
-	return &IPMatcher{matcher: m, asType: asType}, nil
+	return &IPMatcher{matcher: matcher, asType: asType}, nil
 }
 
 // Apply implements Condition.
@@ -341,10 +390,8 @@ func (m *ProcessNameMatcher) Apply(ctx routing.Context) bool {
 	if len(ctx.GetSourceIPs()) == 0 {
 		return false
 	}
-
-	srcPort := uint16(ctx.GetSourcePort())
+	srcPort := ctx.GetSourcePort().String()
 	srcIP := ctx.GetSourceIPs()[0].String()
-
 	var network string
 	switch ctx.GetNetwork() {
 	case net.Network_TCP:
@@ -354,21 +401,11 @@ func (m *ProcessNameMatcher) Apply(ctx routing.Context) bool {
 	default:
 		return false
 	}
-
-	var dstIP string
-	var dstPort uint16 = 0
-
-	// do not use resolved IP because Android process lookup needs original dst ip
-	resolvableContext, ok := ctx.(*dns.ResolvableContext)
-	if ok && len(resolvableContext.Context.GetTargetIPs()) > 0 {
-		dstIP = resolvableContext.Context.GetTargetIPs()[0].String()
-		dstPort = uint16(resolvableContext.Context.GetTargetPort())
-	} else if len(ctx.GetTargetIPs()) > 0 {
-		dstIP = ctx.GetTargetIPs()[0].String()
-		dstPort = uint16(ctx.GetTargetPort())
+	src, err := net.ParseDestination(strings.Join([]string{network, srcIP, srcPort}, ":"))
+	if err != nil {
+		return false
 	}
-
-	pid, name, absPath, err := net.FindProcess(network, srcIP, uint16(srcPort), dstIP, uint16(dstPort))
+	pid, name, absPath, err := net.FindProcess(src)
 	if err != nil {
 		if err != net.ErrNotLocal {
 			errors.LogError(context.Background(), "Unables to find local process name: ", err)

@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -71,7 +70,7 @@ func (o *Observer) background() {
 
 		outbounds := hs.Select(o.config.SubjectSelector)
 
-		o.clearRemovedOutbounds(outbounds)
+		o.updateStatus(outbounds)
 
 		sleepTime := time.Second * 10
 		if o.config.ProbeInterval != 0 {
@@ -112,19 +111,11 @@ func (o *Observer) background() {
 	}
 }
 
-func (o *Observer) clearRemovedOutbounds(outbounds []string) {
+func (o *Observer) updateStatus(outbounds []string) {
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
-	if len(o.status) == 0 {
-		return
-	}
-	var pruned []*OutboundStatus
-	for _, status := range o.status {
-		if slices.Contains(outbounds, status.OutboundTag) {
-			pruned = append(pruned, status)
-		}
-	}
-	o.status = pruned
+	// TODO should remove old inbound that is removed
+	_ = outbounds
 }
 
 func (o *Observer) probe(outbound string) ProbeResult {
@@ -186,7 +177,7 @@ func (o *Observer) probe(outbound string) ProbeResult {
 		return nil
 	})
 	if err != nil {
-		errorMessage := "the outbound " + outbound + " is dead: GET request failed:" + err.Error() + "with outbound handler report underlying connection failed"
+		var errorMessage = "the outbound " + outbound + " is dead: GET request failed:" + err.Error() + "with outbound handler report underlying connection failed"
 		errors.LogInfoInner(o.ctx, errorCollectorForRequest.UnderlyingError(), errorMessage)
 		return ProbeResult{Alive: false, LastErrorReason: errorMessage}
 	}

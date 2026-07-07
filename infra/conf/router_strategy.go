@@ -1,9 +1,8 @@
 package conf
 
 import (
-	"strings"
-
 	"google.golang.org/protobuf/proto"
+	"strings"
 
 	"github.com/xtls/xray-core/app/observatory/burst"
 	"github.com/xtls/xray-core/app/router"
@@ -17,14 +16,17 @@ const (
 	strategyLeastLoad  string = "leastload"
 )
 
-var strategyConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
-	strategyRandom:     func() interface{} { return new(strategyEmptyConfig) },
-	strategyLeastPing:  func() interface{} { return new(strategyEmptyConfig) },
-	strategyRoundRobin: func() interface{} { return new(strategyEmptyConfig) },
-	strategyLeastLoad:  func() interface{} { return new(strategyLeastLoadConfig) },
-}, "type", "settings")
+var (
+	strategyConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
+		strategyRandom:     func() interface{} { return new(strategyEmptyConfig) },
+		strategyLeastPing:  func() interface{} { return new(strategyEmptyConfig) },
+		strategyRoundRobin: func() interface{} { return new(strategyEmptyConfig) },
+		strategyLeastLoad:  func() interface{} { return new(strategyLeastLoadConfig) },
+	}, "type", "settings")
+)
 
-type strategyEmptyConfig struct{}
+type strategyEmptyConfig struct {
+}
 
 func (v *strategyEmptyConfig) Build() (proto.Message, error) {
 	return nil, nil

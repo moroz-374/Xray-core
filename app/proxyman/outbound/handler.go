@@ -6,6 +6,7 @@ import (
 	goerrors "errors"
 	"io"
 	"math/big"
+	"os"
 
 	"github.com/xtls/xray-core/common/dice"
 
@@ -108,9 +109,7 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 
 	ctx = session.ContextWithFullHandler(ctx, h)
 
-	newCtx := session.ContextWithStreamSettings(ctx, h.streamSettings)
-
-	rawProxyHandler, err := common.CreateObject(newCtx, proxyConfig)
+	rawProxyHandler, err := common.CreateObject(ctx, proxyConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -307,6 +306,11 @@ func (h *Handler) Dial(ctx context.Context, dest net.Destination) (stat.Connecti
 			ob := outbounds[len(outbounds)-1]
 			h.SetOutboundGateway(ctx, ob)
 		}
+
+	}
+
+	if conn, err := h.getUoTConnection(ctx, dest); err != os.ErrInvalid {
+		return conn, err
 	}
 
 	conn, err := internet.Dial(ctx, dest, h.streamSettings)
@@ -344,7 +348,7 @@ func (h *Handler) SetOutboundGateway(ctx context.Context, ob *session.Outbound) 
 					errors.LogDebug(ctx, "use inbound source ip as sendthrough: ", inbound.Source.Address.String())
 				}
 			}
-		// case addr.Family().IsDomain():
+		//case addr.Family().IsDomain():
 		default:
 			ob.Gateway = addr
 
@@ -392,6 +396,7 @@ func (h *Handler) ProxySettings() *serial.TypedMessage {
 }
 
 func ParseRandomIP(addr net.Address, prefix string) net.Address {
+
 	_, ipnet, _ := net.ParseCIDR(addr.IP().String() + "/" + prefix)
 
 	ones, bits := ipnet.Mask.Size()

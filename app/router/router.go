@@ -110,6 +110,7 @@ func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
 
 // AddRule implements routing.Router.
 func (r *Router) AddRule(config *serial.TypedMessage, shouldAppend bool) error {
+
 	inst, err := config.GetInstance()
 	if err != nil {
 		return err
@@ -226,6 +227,7 @@ func (r *Router) RemoveRule(tag string) error {
 		return nil
 	}
 	return errors.New("empty tag name!")
+
 }
 
 // ListRule implements routing.Router

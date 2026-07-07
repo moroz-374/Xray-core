@@ -1,99 +1,164 @@
-name: Tests and Checkings
+name: Fork CI
 
 on:
   push:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION_FILE: go.mod
+  UPSTREAM_BASE_TAG: v26.3.27
+
 jobs:
-  check-assets:
+  consistency:
+    name: Protobuf and formatting
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
     steps:
-      - name: Restore Geodat Cache
-        uses: actions/cache/restore@v6
+      - name: Checkout codebase
+        uses: actions/checkout@v6
         with:
-          path: resources
-          key: xray-geodat-
-      - name: Check Assets Existence
-        id: check-assets
-        run: |
-          [ -d 'resources' ] || mkdir resources
-          LIST=('geoip.dat' 'geosite.dat')
-          for FILE_NAME in "${LIST[@]}"
-          do
-            echo -e "Checking ${FILE_NAME}..."
-            if [ -s "./resources/${FILE_NAME}" ]; then
-              echo -e "${FILE_NAME} exists."
-            else
-              echo -e "${FILE_NAME} does not exist."
-              echo "missing=true" >> $GITHUB_OUTPUT
-              break
-            fi
-          done
-      - name: Sleep for 90 seconds if Assets Missing
-        if: steps.check-assets.outputs.missing == 'true'
-        run: sleep 90
-
-  check-proto:
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
-    steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v7
-      - name: Check Proto Version Header
-        run: |
-          head -n 4 core/config.pb.go > ref.txt
-          find . -name "*.pb.go" ! -name "*_grpc.pb.go" -print0 | while IFS= read -r -d '' file; do
-            if ! cmp -s ref.txt <(head -n 4 "$file"); then
-              echo "Error: Header mismatch in $file"
-              head -n 4 "$file"
-              exit 1
-            fi
-          done
-
-  check-format:
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v7
+          fetch-depth: 0
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ env.GO_VERSION_FILE }}
           check-latest: true
-          cache: false
-      - name: Check Format
+      - name: Download modules
+        run: go mod download
+      - name: Check protobuf generator headers
+        shell: bash
         run: |
-          go install -v mvdan.cc/gofumpt@latest
-          go run ./infra/vformat/main.go -mode check -pwd ./
+          head -n 4 core/config.pb.go > "${RUNNER_TEMP}/proto-header.txt"
+          while IFS= read -r -d '' file; do
+            if ! cmp -s "${RUNNER_TEMP}/proto-header.txt" <(head -n 4 "${file}"); then
+              echo "Header mismatch in ${file}"
+              head -n 4 "${file}"
+              exit 1
+            fi
+          done < <(find . -name "*.pb.go" ! -name "*_grpc.pb.go" -print0)
+      - name: Check formatting of fork changes
+        shell: bash
+        run: |
+          mapfile -d '' files < <(git diff --name-only -z "${UPSTREAM_BASE_TAG}" -- '*.go')
+          if (( ${#files[@]} == 0 )); then
+            exit 0
+          fi
+          unformatted="$(gofmt -l "${files[@]}")"
+          if [[ -n "${unformatted}" ]]; then
+            echo "Fork files require gofmt:"
+            echo "${unformatted}"
+            exit 1
+          fi
 
-  test:
-    needs: check-assets
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
-    permissions:
-      contents: read
+  targeted:
+    name: Traffic-audit targeted tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          check-latest: true
+      - name: Download modules
+        run: go mod download
+      - name: Run targeted tests
+        run: >-
+          go test -timeout 20m
+          ./common/log
+          ./common/session
+          ./common/mux
+          ./app/dispatcher
+          ./app/proxyman
+          ./proxy/hysteria
+          ./proxy/vless/outbound
+      - name: Run traffic-audit config tests
+        run: go test -timeout 5m -run '^TestSniffingConfig' ./infra/conf
+
+  race:
+    name: Race detector
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          check-latest: true
+      - name: Download modules
+        run: go mod download
+      - name: Run race tests
+        run: >-
+          go test -race -timeout 45m
+          ./common/log
+          ./common/session
+          ./common/mux
+          ./app/dispatcher
+          ./proxy/...
+
+  full:
+    name: Full suite (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ env.GO_VERSION_FILE }}
           check-latest: true
-      - name: Restore Geodat Cache
-        uses: actions/cache/restore@v6
+      - name: Download modules
+        run: go mod download
+      - name: Download and verify upstream geodata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p resources
+          for name in geoip geosite; do
+            base="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/${name}.dat"
+            curl --fail --location --retry 3 "${base}" --output "resources/${name}.dat"
+            curl --fail --location --retry 3 "${base}.sha256sum" --output "${RUNNER_TEMP}/${name}.sha256sum"
+            expected="$(awk '{print $1}' "${RUNNER_TEMP}/${name}.sha256sum")"
+            actual="$(openssl dgst -sha256 "resources/${name}.dat" | awk '{print $NF}')"
+            test "${actual}" = "${expected}"
+          done
+      # These unchanged upstream tests call mutable public services. X-23 runs
+      # them separately; required PR checks keep the deterministic suite hermetic.
+      - name: Run full deterministic suite
+        run: >-
+          go test -timeout 1h
+          -skip '^(TestECHDial|TestTCPLocalNameServerWithIPv6Override)$'
+          ./...
+
+  build:
+    name: Build smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
-          path: resources
-          key: xray-geodat-
-          enableCrossOsArchive: true
-      - name: Test
-        run: go test -timeout 1h -v ./...
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          check-latest: true
+      - name: Download modules
+        run: go mod download
+      - name: Build Xray
+        run: go build -trimpath -o "${{ runner.temp }}/xray-build-smoke" ./main
