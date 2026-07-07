@@ -147,7 +147,7 @@ jobs:
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0
         with:
-          path: build_assets/xray
+          path: build_assets
           format: spdx-json
           output-file: build_assets/${{ matrix.asset-name }}.spdx.json
           upload-artifact: false
