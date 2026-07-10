@@ -12,6 +12,7 @@ import (
 	"github.com/xtls/xray-core/common"
 	clog "github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/proxy/dokodemo"
@@ -48,6 +49,90 @@ func TestShadowsocks2022UdpChacha(t *testing.T) {
 	password := make([]byte, 32)
 	rand.Read(password)
 	testShadowsocks2022Udp(t, shadowaead_2022.List[2], base64.StdEncoding.EncodeToString(password))
+}
+
+func TestShadowsocks2022MultiUser(t *testing.T) {
+	method := shadowaead_2022.List[0]
+	masterKey := randomShadowsocks2022Key(t)
+	userTCPKey := randomShadowsocks2022Key(t)
+	userUDPKey := randomShadowsocks2022Key(t)
+
+	tcpServer := tcp.Server{MsgProcessor: xor}
+	tcpDest, err := tcpServer.Start()
+	common.Must(err)
+	defer tcpServer.Close()
+
+	udpServer := udp.Server{MsgProcessor: xor}
+	udpDest, err := udpServer.Start()
+	common.Must(err)
+	defer udpServer.Close()
+
+	serverPort := tcp.PickPort()
+	serverConfig := &core.Config{
+		Inbound: []*core.InboundHandlerConfig{{
+			ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
+				PortList: &net.PortList{Range: []*net.PortRange{net.SinglePortRange(serverPort)}},
+				Listen:   net.NewIPOrDomain(net.LocalHostIP),
+			}),
+			ProxySettings: serial.ToTypedMessage(&shadowsocks_2022.MultiUserServerConfig{
+				Method:  method,
+				Key:     masterKey,
+				Network: []net.Network{net.Network_TCP, net.Network_UDP},
+				Users: []*protocol.User{
+					{Email: "x40-tcp", Account: serial.ToTypedMessage(&shadowsocks_2022.Account{Key: userTCPKey})},
+					{Email: "x40-udp", Account: serial.ToTypedMessage(&shadowsocks_2022.Account{Key: userUDPKey})},
+				},
+			}),
+		}},
+		Outbound: []*core.OutboundHandlerConfig{{ProxySettings: serial.ToTypedMessage(&freedom.Config{})}},
+	}
+
+	tcpClientPort := tcp.PickPort()
+	udpClientPort := udp.PickPort()
+	tcpClientConfig := &core.Config{
+		Inbound: []*core.InboundHandlerConfig{{
+			ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
+				PortList: &net.PortList{Range: []*net.PortRange{net.SinglePortRange(tcpClientPort)}},
+				Listen:   net.NewIPOrDomain(net.LocalHostIP),
+			}),
+			ProxySettings: serial.ToTypedMessage(&dokodemo.Config{Address: net.NewIPOrDomain(tcpDest.Address), Port: uint32(tcpDest.Port), Networks: []net.Network{net.Network_TCP}}),
+		}},
+		Outbound: []*core.OutboundHandlerConfig{{ProxySettings: serial.ToTypedMessage(&shadowsocks_2022.ClientConfig{
+			Address: net.NewIPOrDomain(net.LocalHostIP), Port: uint32(serverPort), Method: method, Key: masterKey + ":" + userTCPKey,
+		})}},
+	}
+	udpClientConfig := &core.Config{
+		Inbound: []*core.InboundHandlerConfig{{
+			ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
+				PortList: &net.PortList{Range: []*net.PortRange{net.SinglePortRange(udpClientPort)}},
+				Listen:   net.NewIPOrDomain(net.LocalHostIP),
+			}),
+			ProxySettings: serial.ToTypedMessage(&dokodemo.Config{Address: net.NewIPOrDomain(udpDest.Address), Port: uint32(udpDest.Port), Networks: []net.Network{net.Network_UDP}}),
+		}},
+		Outbound: []*core.OutboundHandlerConfig{{ProxySettings: serial.ToTypedMessage(&shadowsocks_2022.ClientConfig{
+			Address: net.NewIPOrDomain(net.LocalHostIP), Port: uint32(serverPort), Method: method, Key: masterKey + ":" + userUDPKey,
+		})}},
+	}
+
+	servers, err := InitializeServerConfigs(serverConfig, tcpClientConfig, udpClientConfig)
+	common.Must(err)
+	defer CloseAllServers(servers)
+
+	var errGroup errgroup.Group
+	errGroup.Go(testTCPConn(tcpClientPort, 1024, time.Second*20))
+	errGroup.Go(testUDPConn(udpClientPort, 1024, time.Second*10))
+	if err := errGroup.Wait(); err != nil {
+		t.Error(err)
+	}
+}
+
+func randomShadowsocks2022Key(t *testing.T) string {
+	t.Helper()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(key)
 }
 
 func testShadowsocks2022Tcp(t *testing.T, method string, password string) {

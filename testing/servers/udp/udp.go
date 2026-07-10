@@ -9,13 +9,18 @@ import (
 type Server struct {
 	Port         net.Port
 	MsgProcessor func(msg []byte) []byte
+	Listen       net.Address
 	accepting    bool
 	conn         *net.UDPConn
 }
 
 func (server *Server) Start() (net.Destination, error) {
+	listen := server.Listen
+	if listen == nil {
+		listen = net.LocalHostIP
+	}
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{
-		IP:   []byte{127, 0, 0, 1},
+		IP:   listen.IP(),
 		Port: int(server.Port),
 		Zone: "",
 	})
